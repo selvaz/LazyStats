@@ -53,7 +53,7 @@ def test_emits_one_analysis_result_per_series() -> None:
     assert len(results) == 2
     assert all(isinstance(r, AnalysisResult) for r in results)
     assert all(r.kind is ResultKind.SIGNAL for r in results)
-    assert all(r.produced_by == "lazystats.regimes.regime.v1" for r in results)
+    assert all(r.produced_by == "lazyhmm.regime.v1" for r in results)
 
 
 def test_identity_is_canonical_instrument_id() -> None:
