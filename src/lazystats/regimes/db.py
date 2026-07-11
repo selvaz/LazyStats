@@ -602,7 +602,7 @@ class RegimeDB:
         """Smart routing: fit result → write_result; time series → write_series; else JSON."""
         # Case 0: parameter record (has provenance) → indexed model_params table
         if (isinstance(value, dict)
-                and str(value.get("schema", "")).startswith("lazystats.regimes.params")):
+                and str(value.get("schema", "")).startswith("lazyhmm.params")):
             self.write_params(key, value)
             return
 

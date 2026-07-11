@@ -61,7 +61,7 @@ def _as_instrument(dc: Any, name: str) -> Any:
 def to_analysis_results(
     fit_output: Dict[str, Any],
     *,
-    produced_by: str = "lazystats.regimes.regime.v1",
+    produced_by: str = "lazyhmm.regime.v1",
     source: str = "lazyhmm",
     tool_version: Optional[str] = None,
     as_of: Any = None,

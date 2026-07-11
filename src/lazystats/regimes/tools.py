@@ -880,7 +880,7 @@ def _build_params_record(
             pass
 
     record: Dict[str, Any] = {
-        "schema":          "lazystats.regimes.params/1",
+        "schema":          "lazyhmm.params/1",
         "result_key":      result_key,
         "model":           model,
         "cov_type":        cov_type,
@@ -969,7 +969,7 @@ def regime_params_list(
             except Exception:
                 continue
             if not (isinstance(rec, dict)
-                    and str(rec.get("schema", "")).startswith("lazystats.regimes.params")):
+                    and str(rec.get("schema", "")).startswith("lazyhmm.params")):
                 continue
             prov = rec.get("provenance", {})
             if data_key and prov.get("data_key", "") != data_key:
@@ -1011,7 +1011,7 @@ def regime_params_load(
     # Allow passing a bare result_key for convenience.
     try:
         rec = _sread(params_key)
-        if isinstance(rec, dict) and rec.get("schema", "").startswith("lazystats.regimes.params"):
+        if isinstance(rec, dict) and rec.get("schema", "").startswith("lazyhmm.params"):
             return rec
     except KeyError:
         rec = None
