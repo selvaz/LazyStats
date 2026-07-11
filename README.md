@@ -14,6 +14,10 @@ src/lazystats/
     datahub.py   default data path: market-data-hub (lazy import)
     depot.py     SQLite result depot with mandatory provenance
     local.py     notebook-only CSV/DataFrame loaders — NEVER LLM tools
+  regimes/  LazyHMM migrated here (HMM/MS regime engines, SQLite depot,
+            lazydatacore contract) — install extra: lazystats[regimes].
+            load_ticker no longer downloads directly: ingestion goes through
+            market-data-hub (the sole downloader).
 ```
 
 ## Usage
@@ -29,7 +33,7 @@ print(return_volatility(ds, frequency="W")["volatility"])
 ## Roadmap (plan §7 Step 6)
 
 1. ✅ Migrate the LazyTools statistics (golden-test parity).
-2. ⬜ Migrate LazyHMM's engines (`core/`), absorbing its SQLite depot.
+2. ✅ Migrate LazyHMM's engines (`regimes/`), depot included; lazyhmm becomes a coexistence shim.
 3. ⬜ Freeze LazyRay; migrate only after numeric + depot equivalence.
 4. ⬜ Deprecate the source repos after one coexistence release.
 

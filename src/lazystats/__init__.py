@@ -13,8 +13,10 @@ Layout:
              result depot with provenance), local.py (notebook-only loaders —
              NEVER exposed as LLM tools)
 
-Roadmap (plan §7 Step 6): LazyHMM's engines migrate here next; LazyRay is
-frozen and migrates only after numeric + depot equivalence.
+    regimes/ LazyHMM migrated here (extra: lazystats[regimes]); the lazyhmm
+             package is a coexistence shim delegating to this subpackage.
+
+LazyRay is frozen and migrates only after numeric + depot equivalence.
 """
 
 from lazystats.core import (

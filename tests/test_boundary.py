@@ -11,10 +11,17 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parent.parent / "src" / "lazystats"
 
-FORBIDDEN_ANYWHERE = {"lazybridge", "lazytools", "duckdb", "requests", "httpx",
+FORBIDDEN_ANYWHERE = {"lazytools", "duckdb", "requests", "httpx",
                       "urllib3", "yfinance"}
+# lazybridge is forbidden at module level everywhere; the ONE sanctioned lazy
+# use is regimes/tools.py's optional connect_lazy_store (migrated from
+# LazyHMM: attaches a Store the caller already has — lazystats never needs it).
+LAZYBRIDGE_LAZY_ALLOWED = {"tools.py"}
 # Heavy-but-legitimate lazy imports, allowed only inside function bodies:
 LAZY_ONLY = {"pandas", "market_data_hub"}
+# regimes/ is the migrated LazyHMM: numpy/pandas/matplotlib/hmmlearn/sklearn
+# are its declared extra and may be imported at module level THERE only.
+REGIMES_HEAVY = {"numpy", "pandas", "matplotlib", "hmmlearn", "sklearn"}
 
 
 def _imports(tree: ast.AST, *, top_level_only: bool) -> set[str]:
@@ -28,14 +35,33 @@ def _imports(tree: ast.AST, *, top_level_only: bool) -> set[str]:
     return mods
 
 
+def _in_regimes(path: Path) -> bool:
+    return "regimes" in path.parts
+
+
 def test_no_bridge_or_warehouse_imports_anywhere() -> None:
     offenders = []
     for path in SRC.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for mod in _imports(tree, top_level_only=False):
-            if mod.split(".")[0] in FORBIDDEN_ANYWHERE:
+            root = mod.split(".")[0]
+            if root in FORBIDDEN_ANYWHERE:
+                offenders.append(f"{path.name}: {mod}")
+            if root == "lazybridge" and not (
+                _in_regimes(path) and path.name in LAZYBRIDGE_LAZY_ALLOWED
+            ):
                 offenders.append(f"{path.name}: {mod}")
     assert not offenders, f"lazystats must stay pure; found: {offenders}"
+
+
+def test_lazybridge_never_at_module_level() -> None:
+    offenders = []
+    for path in SRC.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for mod in _imports(tree, top_level_only=True):
+            if mod.split(".")[0] == "lazybridge":
+                offenders.append(f"{path.name}: {mod}")
+    assert not offenders, f"lazybridge must never be a module-level import: {offenders}"
 
 
 def test_heavy_integrations_are_lazy_only() -> None:
@@ -43,7 +69,10 @@ def test_heavy_integrations_are_lazy_only() -> None:
     for path in SRC.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for mod in _imports(tree, top_level_only=True):
-            if mod.split(".")[0] in LAZY_ONLY:
+            root = mod.split(".")[0]
+            if root in LAZY_ONLY and not (_in_regimes(path) and root in REGIMES_HEAVY):
+                offenders.append(f"{path.name}: {mod}")
+            if root in REGIMES_HEAVY and not _in_regimes(path):
                 offenders.append(f"{path.name}: {mod}")
     assert not offenders, f"must be imported lazily inside functions: {offenders}"
 
