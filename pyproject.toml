@@ -53,7 +53,10 @@ select = ["E", "F", "I", "UP", "B"]
 "tests/regimes/**" = ["E", "I", "UP", "B"]
 
 [tool.mypy]
-python_version = "3.11"
+# No explicit python_version: mypy assumes the interpreter actually running
+# it. Pinning 3.11 broke the 3.12/3.13 CI legs — numpy's bundled stubs use
+# the `type` statement (3.12+ syntax), unparseable under a lower target.
+# Same rationale as market-data-hub's mypy config.
 packages = ["lazystats"]
 strict = true
 ignore_missing_imports = true
