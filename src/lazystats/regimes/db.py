@@ -580,15 +580,24 @@ class RegimeDB:
             """).fetchall()
         return [dict(r) for r in rows]
 
-    def export_plot(self, plot_key: str, output_path: str) -> str:
+    def get_plot(self, plot_key: str) -> bytes:
+        """Return the stored PNG bytes for a plot (no filesystem side effect).
+
+        This is the in-process read path a downstream consumer (e.g. a report
+        renderer embedding the chart) uses; ``export_plot`` stays the
+        write-to-disk variant. Raises KeyError if the plot is absent.
+        """
         with self._conn() as conn:
             row = conn.execute(
                 "SELECT png_blob FROM plots WHERE plot_key=?", (plot_key,)
             ).fetchone()
         if row is None:
             raise KeyError(f"Plot '{plot_key}' not found in DB.")
+        return bytes(row["png_blob"])
+
+    def export_plot(self, plot_key: str, output_path: str) -> str:
         path = Path(output_path)
-        path.write_bytes(row["png_blob"])
+        path.write_bytes(self.get_plot(plot_key))
         return str(path.resolve())
 
     def delete_plot(self, plot_key: str) -> bool:

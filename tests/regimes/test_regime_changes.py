@@ -147,10 +147,18 @@ def test_generate_regime_plots_from_stored_fit(tmp_path):
         assert exported["success"] is True
         assert target.exists() and target.stat().st_size > 1000
 
+        # get_plot is the in-process read path (same bytes, no file write)
+        blob = rdb.get_db().get_plot(out["plot_keys"][0])
+        assert blob == target.read_bytes()
+        assert blob[:8] == b"\x89PNG\r\n\x1a\n"
+
+        import pytest as _pytest
+        with _pytest.raises(KeyError, match="not found"):
+            rdb.get_db().get_plot("no_such_plot")
+
         # missing data_key on an inline fit fails with guidance
         fit_regimes(data=[float(v) for v in y], series_names=["SPY"],
                     result_key="inlinefit", S_max=2, n_starts=1, random_state=0)
-        import pytest as _pytest
         with _pytest.raises(ValueError, match="data_key"):
             generate_regime_plots("inlinefit")
     finally:
