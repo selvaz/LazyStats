@@ -106,3 +106,52 @@ def test_depot_roundtrips_index(tmp_path) -> None:
     out = get_regime_changes(fit_result=got, series_name="SPY")
     assert out["last_change_date"] == "2020-01-17"
     assert out["n_changes"] == 1
+
+
+# ---------------------------------------------------------------------------
+# generate_regime_plots — agent-facing chart generation (audit Gate 3)
+# ---------------------------------------------------------------------------
+def test_generate_regime_plots_from_stored_fit(tmp_path):
+    """fit (data_key + result_key) -> generate plots -> plots in the depot,
+    exportable. The caller only ever handles short string keys."""
+    import numpy as np
+
+    import lazystats.regimes.db as rdb
+    from lazystats.regimes import fit_regimes, generate_regime_plots
+    from lazystats.regimes.tools import _swrite
+
+    rdb.init_regime_db(str(tmp_path / "plots.db"))
+    try:
+        rng = np.random.RandomState(0)
+        n = 200
+        states = np.zeros(n, dtype=int)
+        states[n // 3: 2 * n // 3] = 1
+        y = np.where(states == 0, rng.normal(0, 0.5, n), rng.normal(0, 3.0, n))
+        _swrite("plotdata", {
+            "Y": y.reshape(-1, 1), "columns": ["SPY"],
+            "index": [f"2020-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(n)]})
+
+        fit_regimes(data_key="plotdata", series_names=["SPY"],
+                    result_key="plotfit", S_max=2, n_starts=1, random_state=0)
+
+        out = generate_regime_plots("plotfit")
+        assert out["n_plots"] == 3          # 1 series + 2 barcodes
+        assert out["series"] == ["SPY"]
+        assert all(isinstance(k, str) and k for k in out["plot_keys"])
+
+        listed = rdb.db_list_plots()
+        assert listed["count"] >= 3
+
+        target = tmp_path / "chart.png"
+        exported = rdb.db_export_plot(out["plot_keys"][0], str(target))
+        assert exported["success"] is True
+        assert target.exists() and target.stat().st_size > 1000
+
+        # missing data_key on an inline fit fails with guidance
+        fit_regimes(data=[float(v) for v in y], series_names=["SPY"],
+                    result_key="inlinefit", S_max=2, n_starts=1, random_state=0)
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="data_key"):
+            generate_regime_plots("inlinefit")
+    finally:
+        rdb._DB = None
