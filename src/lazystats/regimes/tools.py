@@ -1250,7 +1250,10 @@ def fit_regimes(
                    "series": full_result,
                    # date/index labels (from the data payload) so downstream
                    # tools can map Viterbi state changes back to dates.
-                   "index": _resolve_index(data_key, T)}
+                   "index": _resolve_index(data_key, T),
+                   # provenance for generate_regime_plots: which stored data
+                   # payload this fit was computed on ("" for inline data)
+                   "data_key": data_key}
 
     # Store full result (with T×S state_probs) for downstream tools
     params_key = ""
@@ -2021,3 +2024,91 @@ def compare_regime_windows(
         "windows":    window_results,
         "comparison": comparison,
     }
+
+
+def generate_regime_plots(
+    result_key: Annotated[
+        str,
+        "Store key of a fit produced by fit_regimes(result_key=...). "
+        "The full stored result (states, posteriors, index) is rebuilt from "
+        "the store; nothing large passes through the caller.",
+    ],
+    data_key: Annotated[
+        str,
+        "Store key of the data the fit was computed on. Empty = use the "
+        "data_key recorded in the stored fit result.",
+    ] = "",
+    theme: Annotated[
+        Literal["dark", "light", "minimal"],
+        "Plot theme.",
+    ] = "dark",
+    last_years: Annotated[
+        int,
+        "Plot only the most recent N years of the fitted history.",
+    ] = 20,
+    points_per_year: Annotated[
+        int,
+        "Observations per year at the fit's frequency (52 weekly, 252 daily).",
+    ] = 52,
+) -> dict:
+    """Render ALL regime plots for a stored fit into the SQLite depot.
+
+    Rebuilds the fitted run (values + states + posteriors) from the store,
+    renders one series_with_regimes chart per series plus the two barcode
+    charts headlessly (Agg), and persists the PNGs in the depot's plots
+    table. Use db_list_plots() to enumerate them and db_export_plot() to save
+    one to disk. Requires an active depot (init_regime_db).
+
+    Returns:
+        dict with keys:
+            result_key (str), n_plots (int), plot_keys (list[str]),
+            series (list[str]), theme (str).
+    """
+    rec = _sread(result_key)
+    if not isinstance(rec, dict) or "series" not in rec:
+        raise ValueError(f"{result_key!r} is not a stored fit_regimes result")
+    dkey = data_key or rec.get("data_key") or ""
+    if not dkey:
+        raise ValueError(
+            "the stored fit has no data_key (inline data= fit): pass the "
+            "data_key of the stored series explicitly")
+    payload = _sread(dkey)
+    Y = _ensure_2d(np.asarray(payload["Y"], dtype=float))
+    columns = list(payload["columns"])
+
+    idx_raw = rec.get("index") or payload.get("index") or []
+    idx = pd.to_datetime(list(idx_raw), errors="coerce")
+    if idx.isna().all():
+        idx = pd.RangeIndex(len(Y))
+
+    parts: List[pd.DataFrame] = []
+    labels_map: Dict[str, List[str]] = {}
+    meta: Dict[str, Any] = {}
+    names = [c for c in columns if c in rec["series"]]
+    if not names:
+        raise ValueError("stored fit and stored data share no series names")
+    for j, name in enumerate(names):
+        sd = rec["series"][name]
+        gamma = np.asarray(sd["state_probs"], dtype=float)
+        S = int(sd["S"])
+        frame = {
+            f"{name}_value":   Y[:, columns.index(name)],
+            f"{name}_state":   np.asarray(sd["states"], dtype=int),
+            f"{name}_highvol": np.asarray(sd["high_vol_flag"], dtype=int),
+            f"P_{name}_HV":    np.asarray(sd["prob_high_vol"], dtype=float),
+        }
+        for s in range(S):
+            frame[f"P_{name}_S{s}"] = gamma[:, s]
+        parts.append(pd.DataFrame(frame, index=idx))
+        labels_map[name] = list(sd["labels"])
+        meta[name] = {"S": S, "labels": list(sd["labels"]),
+                      "bic": sd.get("bic"), "loglik": sd.get("loglik")}
+
+    run = DBRegimeRun(panel=pd.concat(parts, axis=1), rows=names,
+                      labels_map=labels_map, meta=meta)
+    run.set_theme(theme)
+    plot_keys = run.save_all_plots_to_db(
+        result_key=result_key, data_key=dkey,
+        last_years=last_years, points_per_year=points_per_year)
+    return {"result_key": result_key, "n_plots": len(plot_keys),
+            "plot_keys": plot_keys, "series": names, "theme": theme}
