@@ -50,9 +50,10 @@ print(return_volatility(ds, frequency="W")["volatility"])
 
 ## Install
 
-LazyStats is distributed from GitHub (only LazyBridge is on PyPI):
+LazyStats is distributed from GitHub (only LazyBridge is on PyPI). These
+pull the current `main`; append `@vX.Y.Z` to pin a release tag:
 
 ```
-pip install "lazystats @ git+https://github.com/selvaz/LazyStats.git@<ref>"
-pip install "lazystats[regimes] @ git+https://github.com/selvaz/LazyStats.git@<ref>"
+pip install "lazystats @ git+https://github.com/selvaz/LazyStats.git"
+pip install "lazystats[regimes] @ git+https://github.com/selvaz/LazyStats.git"
 ```
