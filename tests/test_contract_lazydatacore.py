@@ -74,9 +74,15 @@ def test_instrument_id_fixture_validates_every_entry():
 
 def _return_dataset_from_fixture() -> ReturnDataset:
     raw = _load("return_series.json")
-    instruments = raw["instruments"]
+    instruments = raw["instruments"]          # canonical ids, e.g. "ticker:AAPL"
+    symbols = raw["symbols"]                   # bare column keys, e.g. "AAPL"
+    # The hub's return frame is keyed by bare symbol; the consumer relabels
+    # bare -> canonical when building a ReturnDataset. This mirrors exactly
+    # what lazystats.io.datahub.load_returns does, so we exercise the real
+    # consumption path rather than assuming the fixture is already canonical.
+    bare_to_canonical = dict(zip(symbols, instruments, strict=True))
     rows = [
-        {"date": row["date"], **{iid: row[iid] for iid in instruments}}
+        {"date": row["date"], **{bare_to_canonical[sym]: row[sym] for sym in symbols}}
         for row in raw["rows"]
     ]
     return ReturnDataset(instruments=instruments, rows=rows, metadata=raw.get("metadata", {}))
