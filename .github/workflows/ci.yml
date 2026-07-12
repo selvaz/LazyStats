@@ -31,3 +31,30 @@ jobs:
         run: mypy
       - name: Tests
         run: pytest -q --cov=lazystats --cov-report=term-missing
+
+  contract:
+    # Consumer-side half of the lazydatacore contract (ECO-010 / Train B PR
+    # B3): validates against market-data-hub's contracts/v1/*.json fixtures
+    # with the real market_data_hub package installed, not mocked. Separate
+    # job (not part of the matrix) so a market-data-hub-side regression is
+    # visible on its own status check rather than buried in the main test
+    # job's summary.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lazystats + market-data-hub (pinned commit)
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[test,contract]"
+      - name: Checkout market-data-hub contracts/v1/ fixtures
+        run: |
+          MDH_REF=$(python -c "import tomllib; d=tomllib.load(open('pyproject.toml','rb')); print([x for x in d['project']['optional-dependencies']['contract'] if 'market-data-hub' in x][0].rsplit('@',1)[1])")
+          git clone --filter=blob:none https://github.com/selvaz/market-data-hub.git /tmp/mdh
+          git -C /tmp/mdh checkout "$MDH_REF"
+          echo "MDH_CONTRACTS_DIR=/tmp/mdh/contracts/v1" >> "$GITHUB_ENV"
+      - name: Contract tests
+        run: pytest tests/test_contract_lazydatacore.py -v

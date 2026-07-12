@@ -30,6 +30,18 @@ regimes = [
 ]
 test = ["lazystats[regimes]", "pytest>=8.2", "pytest-cov>=5.0"]
 dev = ["lazystats[test]", "ruff>=0.6", "mypy>=1.10"]
+# Ecosystem contract tests (stabilization plan, ECO-010 / Train B PR B3):
+# validates lazystats.models.ReturnDataset against market-data-hub's
+# contracts/v1/*.json fixtures. Pinned to an immutable commit -- same
+# dependency-confusion rationale as the datahub.py runtime import (not a
+# PyPI extra, market-data-hub is not on PyPI). Opt-in: the default test
+# suite skips these tests when market-data-hub isn't installed.
+contract = ["market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@0eb286e4e931c089ae9d4383f5f6f615d9b4d5e4"]
+
+[tool.hatch.metadata]
+# Required for the `contract` extra's direct Git reference: market-data-hub
+# is not on PyPI (private/proprietary, GitHub-only distribution).
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lazystats"]
