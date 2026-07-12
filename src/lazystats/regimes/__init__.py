@@ -51,6 +51,7 @@ from .tools import (
     fit_regimes, scan_state_counts,
     get_current_regime, get_regime_changes, get_regime_summary, compare_emission_models,
     fit_categorical_regimes, fit_regimes_window, compare_regime_windows,
+    generate_regime_plots,
     init_regime_db,
     # parameter persistence + fixed-parameter inference (tool layer)
     regime_params_save, regime_params_load, apply_regime_params,
@@ -85,6 +86,7 @@ __all__ = [
     "get_current_regime", "get_regime_changes", "get_regime_summary",
     "compare_emission_models",
     "fit_categorical_regimes", "fit_regimes_window", "compare_regime_windows",
+    "generate_regime_plots",
     # parameter persistence + fixed-parameter inference
     "regime_params_save", "regime_params_load", "apply_regime_params",
     "regime_params_list",
