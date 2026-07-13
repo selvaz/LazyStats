@@ -17,8 +17,9 @@ FORBIDDEN_ANYWHERE = {"lazytools", "duckdb", "requests", "httpx",
 # use is regimes/tools.py's optional connect_lazy_store (migrated from
 # LazyHMM: attaches a Store the caller already has — lazystats never needs it).
 LAZYBRIDGE_LAZY_ALLOWED = {"tools.py"}
-# Heavy-but-legitimate lazy imports, allowed only inside function bodies:
-LAZY_ONLY = {"pandas", "market_data_hub"}
+# Heavy-but-legitimate lazy imports, allowed only inside function bodies
+# (statsmodels/scipy back lazystats.regression, extra `lazystats[regression]`):
+LAZY_ONLY = {"pandas", "market_data_hub", "statsmodels", "scipy"}
 # regimes/ is the migrated LazyHMM: numpy/pandas/matplotlib/hmmlearn/sklearn
 # are its declared extra and may be imported at module level THERE only.
 REGIMES_HEAVY = {"numpy", "pandas", "matplotlib", "hmmlearn", "sklearn"}

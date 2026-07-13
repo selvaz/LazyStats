@@ -16,6 +16,9 @@ src/lazystats/
   regimes/  HMM / Markov-switching regime engines — install extra:
             lazystats[regimes] (numpy, pandas, matplotlib, hmmlearn,
             scikit-learn; the rest of the library stays dependency-free)
+  regression/  OLS / Ridge / Lasso wrappers — install extra:
+            lazystats[regression] (numpy, statsmodels, scikit-learn;
+            imported lazily, `import lazystats` stays dependency-free)
 ```
 
 ## Regimes
@@ -41,11 +44,31 @@ print(get_regime_summary(result_key="spy_fit"))
 ## Usage (core statistics)
 
 ```python
-from lazystats import return_volatility
+from lazystats import return_volatility, standardize
 from lazystats.io.datahub import load_returns
 
 ds = load_returns("SPY,TLT", start="2024-01-01", frequency="W")
 print(return_volatility(ds, frequency="W")["volatility"])
+zscored = standardize(ds)  # callable dataset post-transform (also: demean)
+```
+
+## Regression (OLS / Ridge / Lasso)
+
+`lazystats.regression` wraps statsmodels (OLS with robust/HAC standard
+errors) and scikit-learn (Ridge/Lasso, cross-validated alpha by default) —
+no hand-rolled math. Input is the same `ReturnDataset` panel; output is a
+plain JSON-serialisable dict of coefficients and diagnostics, never residual
+or fitted series. Univariate regression is simply the 1-regressor case.
+
+```python
+from lazystats.io.datahub import load_returns
+from lazystats.regression import fit_ols, fit_ridge, fit_lasso
+
+ds = load_returns("SPY,QQQ,TLT", start="2020-01-01", frequency="W")
+ols = fit_ols(ds, "ticker:SPY", ["ticker:QQQ", "ticker:TLT"], cov="HAC")
+ridge = fit_ridge(ds, "ticker:SPY")          # alpha=None -> RidgeCV
+lasso = fit_lasso(ds, "ticker:SPY")          # alpha=None -> LassoCV
+print(ols["coefficients"], ridge["alpha"], lasso["selected_regressors"])
 ```
 
 ## Install

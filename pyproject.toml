@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lazystats"
-version = "0.1.0"
+version = "0.2.0"
 description = "Pure statistical library of the LazyBridge ecosystem — core statistics, models and hub-backed I/O. No lazybridge, no LLM wrapping (that lives in LazyTools)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,7 +28,16 @@ regimes = [
     "hmmlearn>=0.3",
     "scikit-learn>=1.1",
 ]
-test = ["lazystats[regimes]", "pytest>=8.2", "pytest-cov>=5.0"]
+# lazystats.regression — OLS/Ridge/Lasso wrappers over statsmodels and
+# scikit-learn. Imported lazily inside function bodies: `import lazystats`
+# and even `import lazystats.regression` stay dependency-free until a fit
+# function actually runs.
+regression = [
+    "numpy>=1.24",
+    "statsmodels>=0.14",
+    "scikit-learn>=1.1",
+]
+test = ["lazystats[regimes]", "lazystats[regression]", "pytest>=8.2", "pytest-cov>=5.0"]
 dev = ["lazystats[test]", "ruff>=0.6", "mypy>=1.10"]
 # Ecosystem contract tests (stabilization plan, ECO-010 / Train B PR B3):
 # validates lazystats.models.ReturnDataset against market-data-hub's

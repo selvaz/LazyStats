@@ -21,6 +21,7 @@ LazyRay is frozen and migrates only after numeric + depot equivalence.
 
 from lazystats.core import (
     PERIODS_PER_YEAR,
+    demean,
     pearson,
     periods_per_year,
     return_correlation,
@@ -28,10 +29,11 @@ from lazystats.core import (
     return_volatility,
     series_observations,
     series_values,
+    standardize,
 )
 from lazystats.models import ReturnDataset
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "ReturnDataset",
@@ -40,6 +42,8 @@ __all__ = [
     "return_outliers",
     "series_observations",
     "series_values",
+    "standardize",
+    "demean",
     "pearson",
     "periods_per_year",
     "PERIODS_PER_YEAR",

@@ -12,9 +12,11 @@ from lazystats.core.returns import (
     series_observations,
     series_values,
 )
+from lazystats.core.transforms import demean, standardize
 
 __all__ = [
     "PERIODS_PER_YEAR",
+    "demean",
     "pearson",
     "periods_per_year",
     "return_correlation",
@@ -22,4 +24,5 @@ __all__ = [
     "return_volatility",
     "series_observations",
     "series_values",
+    "standardize",
 ]
