@@ -52,7 +52,9 @@ def _resolve_dataset(dataset: ReturnDataset | None, data_key: str) -> ReturnData
             value = float(matrix[i][j])
             row[column] = value if math.isfinite(value) else None
         rows.append(row)
-    return ReturnDataset(instruments=columns, rows=rows, metadata={"source": "depot", "data_key": data_key})
+    return ReturnDataset(
+        instruments=columns, rows=rows, metadata={"source": "depot", "data_key": data_key}
+    )
 
 
 def fit_ols(
