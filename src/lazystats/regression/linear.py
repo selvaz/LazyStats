@@ -56,7 +56,8 @@ def _resolve_dataset(dataset: ReturnDataset | None, data_key: str) -> ReturnData
 
 
 def fit_ols(
-    dependent: Annotated[str, "Left-hand series name — a column of the loaded returns."],
+    dataset: ReturnDataset | None = None,
+    dependent: str = "",
     regressors: Annotated[
         list[str] | None,
         "Right-hand series names (columns of the loaded returns). Omit/empty to use "
@@ -66,12 +67,9 @@ def fit_ols(
     data_key: Annotated[
         str,
         "Store key from load_from_datahub(data_key=...) (or load_time_series). "
-        "Preferred for LLM use — avoids passing return arrays in tool calls.",
+        "Preferred for LLM use — avoids passing return arrays in tool calls. "
+        "Alternative to dataset=.",
     ] = "",
-    dataset: Annotated[
-        ReturnDataset | None,
-        "Reserved for programmatic/library use. Agents should leave this unset and pass data_key instead.",
-    ] = None,
     add_constant: bool = True,
     cov: str = "nonrobust",
     hac_lags: int | None = None,
@@ -80,12 +78,17 @@ def fit_ols(
 ) -> dict[str, Any]:
     """Ordinary least squares via ``statsmodels.api.OLS``.
 
-    Univariate regression is simply the 1-regressor case. ``cov`` selects the
-    covariance estimator: ``nonrobust``, ``HC0``–``HC3`` (heteroskedasticity-
-    robust) or ``HAC`` (Newey-West; ``hac_lags=None`` uses the common
-    ``floor(4 * (n/100) ** (2/9))`` rule). Reads returns from ``data_key`` (the
-    shared depot also used by ``lazystats.regimes``) or an inline ``dataset``.
+    ``dataset``/``dependent``/``regressors`` stay positional for backward
+    compatibility with existing callers; pass ``data_key`` instead of
+    ``dataset`` to read returns from the shared depot also used by
+    ``lazystats.regimes`` (``load_from_datahub``) rather than an inline
+    ``ReturnDataset``. Univariate regression is simply the 1-regressor case.
+    ``cov`` selects the covariance estimator: ``nonrobust``, ``HC0``–``HC3``
+    (heteroskedasticity-robust) or ``HAC`` (Newey-West; ``hac_lags=None`` uses
+    the common ``floor(4 * (n/100) ** (2/9))`` rule).
     """
+    if not dependent:
+        raise ValueError("dependent is required")
     if cov not in _OLS_COV_TYPES:
         raise ValueError(f"cov must be one of {', '.join(sorted(_OLS_COV_TYPES))}")
     if not 0 < ci_level < 1:
@@ -163,7 +166,8 @@ def fit_ols(
 
 
 def fit_ridge(
-    dependent: Annotated[str, "Left-hand series name — a column of the loaded returns."],
+    dataset: ReturnDataset | None = None,
+    dependent: str = "",
     regressors: Annotated[
         list[str] | None,
         "Right-hand series names (columns of the loaded returns). Omit/empty to use "
@@ -171,12 +175,8 @@ def fit_ridge(
     ] = None,
     *,
     data_key: Annotated[
-        str, "Store key from load_from_datahub(data_key=...). Preferred for LLM use."
+        str, "Store key from load_from_datahub(data_key=...). Alternative to dataset=."
     ] = "",
-    dataset: Annotated[
-        ReturnDataset | None,
-        "Reserved for programmatic/library use. Agents should leave this unset and pass data_key instead.",
-    ] = None,
     alpha: float | None = None,
     alphas: list[float] | None = None,
     cv_folds: int = 5,
@@ -185,9 +185,12 @@ def fit_ridge(
 ) -> dict[str, Any]:
     """Ridge regression via scikit-learn; ``alpha=None`` cross-validates.
 
-    Reads returns from ``data_key`` (the shared depot also used by
-    ``lazystats.regimes``) or an inline ``dataset``.
+    ``dataset``/``dependent``/``regressors`` stay positional for backward
+    compatibility; pass ``data_key`` instead of ``dataset`` to read returns
+    from the shared depot also used by ``lazystats.regimes``.
     """
+    if not dependent:
+        raise ValueError("dependent is required")
     return _fit_regularized(
         "ridge",
         _resolve_dataset(dataset, data_key),
@@ -202,7 +205,8 @@ def fit_ridge(
 
 
 def fit_lasso(
-    dependent: Annotated[str, "Left-hand series name — a column of the loaded returns."],
+    dataset: ReturnDataset | None = None,
+    dependent: str = "",
     regressors: Annotated[
         list[str] | None,
         "Right-hand series names (columns of the loaded returns). Omit/empty to use "
@@ -210,12 +214,8 @@ def fit_lasso(
     ] = None,
     *,
     data_key: Annotated[
-        str, "Store key from load_from_datahub(data_key=...). Preferred for LLM use."
+        str, "Store key from load_from_datahub(data_key=...). Alternative to dataset=."
     ] = "",
-    dataset: Annotated[
-        ReturnDataset | None,
-        "Reserved for programmatic/library use. Agents should leave this unset and pass data_key instead.",
-    ] = None,
     alpha: float | None = None,
     cv_folds: int = 5,
     standardize: bool = True,
@@ -223,9 +223,12 @@ def fit_lasso(
 ) -> dict[str, Any]:
     """Lasso regression via scikit-learn; ``alpha=None`` cross-validates.
 
-    Reads returns from ``data_key`` (the shared depot also used by
-    ``lazystats.regimes``) or an inline ``dataset``.
+    ``dataset``/``dependent``/``regressors`` stay positional for backward
+    compatibility; pass ``data_key`` instead of ``dataset`` to read returns
+    from the shared depot also used by ``lazystats.regimes``.
     """
+    if not dependent:
+        raise ValueError("dependent is required")
     return _fit_regularized(
         "lasso",
         _resolve_dataset(dataset, data_key),
