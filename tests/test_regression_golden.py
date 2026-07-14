@@ -91,8 +91,13 @@ def test_prepare_design_requires_enough_observations() -> None:
         prepare_design(tiny, "ticker:Y", ["ticker:X1"])
 
 
+def test_fit_requires_data_key_or_dataset() -> None:
+    with pytest.raises(ValueError, match="data_key.*dataset"):
+        fit_ols("ticker:Y", ["ticker:X1"])
+
+
 def test_ols_multivariate_recovers_coefficients(dataset: ReturnDataset) -> None:
-    out = fit_ols(dataset, "ticker:Y", ["ticker:X1", "ticker:X2"])
+    out = fit_ols("ticker:Y", ["ticker:X1", "ticker:X2"], dataset=dataset)
     assert out["model"] == "ols"
     assert out["n_obs"] == 58
     assert out["coefficients"]["const"]["coef"] == pytest.approx(TRUE_CONST, abs=2e-4)
@@ -110,7 +115,7 @@ def test_ols_multivariate_recovers_coefficients(dataset: ReturnDataset) -> None:
 
 def test_ols_univariate_matches_closed_form(dataset: ReturnDataset) -> None:
     """Independent cross-check: slope = cov(x, y)/var(x) via the stdlib."""
-    out = fit_ols(dataset, "ticker:Y", ["ticker:X1"])
+    out = fit_ols("ticker:Y", ["ticker:X1"], dataset=dataset)
     pairs = [
         (row["ticker:X1"], row["ticker:Y"])
         for row in dataset.rows
@@ -126,8 +131,8 @@ def test_ols_univariate_matches_closed_form(dataset: ReturnDataset) -> None:
 
 
 def test_ols_hac_changes_standard_errors(dataset: ReturnDataset) -> None:
-    plain = fit_ols(dataset, "ticker:Y", ["ticker:X1", "ticker:X2"])
-    hac = fit_ols(dataset, "ticker:Y", ["ticker:X1", "ticker:X2"], cov="HAC")
+    plain = fit_ols("ticker:Y", ["ticker:X1", "ticker:X2"], dataset=dataset)
+    hac = fit_ols("ticker:Y", ["ticker:X1", "ticker:X2"], dataset=dataset, cov="HAC")
     assert hac["cov_type"] == "HAC"
     assert hac["hac_lags"] >= 1
     assert hac["coefficients"]["ticker:X1"]["coef"] == plain["coefficients"]["ticker:X1"]["coef"]
@@ -138,9 +143,9 @@ def test_ols_hac_changes_standard_errors(dataset: ReturnDataset) -> None:
 
 
 def test_ols_no_constant_and_standardize(dataset: ReturnDataset) -> None:
-    out = fit_ols(dataset, "ticker:Y", ["ticker:X1"], add_constant=False)
+    out = fit_ols("ticker:Y", ["ticker:X1"], dataset=dataset, add_constant=False)
     assert "const" not in out["coefficients"]
-    std = fit_ols(dataset, "ticker:Y", ["ticker:X1", "ticker:X2"], standardize=True)
+    std = fit_ols("ticker:Y", ["ticker:X1", "ticker:X2"], dataset=dataset, standardize=True)
     assert std["standardized"] is True
     # standardized effect size: beta * std(x)/std(y), well below the raw 2.0
     assert 0 < std["coefficients"]["ticker:X1"]["coef"] < 1.5
@@ -148,15 +153,15 @@ def test_ols_no_constant_and_standardize(dataset: ReturnDataset) -> None:
 
 def test_ols_validation(dataset: ReturnDataset) -> None:
     with pytest.raises(ValueError, match="cov must be one of"):
-        fit_ols(dataset, "ticker:Y", ["ticker:X1"], cov="bogus")
+        fit_ols("ticker:Y", ["ticker:X1"], dataset=dataset, cov="bogus")
     with pytest.raises(ValueError, match="ci_level"):
-        fit_ols(dataset, "ticker:Y", ["ticker:X1"], ci_level=1.2)
+        fit_ols("ticker:Y", ["ticker:X1"], dataset=dataset, ci_level=1.2)
     with pytest.raises(ValueError, match="hac_lags"):
-        fit_ols(dataset, "ticker:Y", ["ticker:X1"], cov="HAC", hac_lags=0)
+        fit_ols("ticker:Y", ["ticker:X1"], dataset=dataset, cov="HAC", hac_lags=0)
 
 
 def test_ridge_fixed_alpha(dataset: ReturnDataset) -> None:
-    out = fit_ridge(dataset, "ticker:Y", ["ticker:X1", "ticker:X2"], alpha=1e-4)
+    out = fit_ridge("ticker:Y", ["ticker:X1", "ticker:X2"], dataset=dataset, alpha=1e-4)
     assert out["model"] == "ridge"
     assert out["alpha_selection"] == "fixed"
     assert out["alpha"] == pytest.approx(1e-4)
@@ -169,7 +174,7 @@ def test_ridge_fixed_alpha(dataset: ReturnDataset) -> None:
 
 
 def test_ridge_cv_selects_alpha_from_grid(dataset: ReturnDataset) -> None:
-    out = fit_ridge(dataset, "ticker:Y", ["ticker:X1", "ticker:X2"], cv_folds=5)
+    out = fit_ridge("ticker:Y", ["ticker:X1", "ticker:X2"], dataset=dataset, cv_folds=5)
     assert out["alpha_selection"] == "cv"
     assert out["cv_folds"] == 5
     assert 1e-4 <= out["alpha"] <= 1e4
@@ -178,7 +183,7 @@ def test_ridge_cv_selects_alpha_from_grid(dataset: ReturnDataset) -> None:
 
 def test_lasso_zeroes_irrelevant_regressor(dataset: ReturnDataset) -> None:
     out = fit_lasso(
-        dataset, "ticker:Y", ["ticker:X1", "ticker:X2", "ticker:X3"], alpha=0.002
+        "ticker:Y", ["ticker:X1", "ticker:X2", "ticker:X3"], dataset=dataset, alpha=0.002
     )
     assert out["model"] == "lasso"
     assert "ticker:X1" in out["selected_regressors"]
@@ -189,7 +194,7 @@ def test_lasso_zeroes_irrelevant_regressor(dataset: ReturnDataset) -> None:
 
 
 def test_lasso_cv_path(dataset: ReturnDataset) -> None:
-    out = fit_lasso(dataset, "ticker:Y", ["ticker:X1", "ticker:X2", "ticker:X3"])
+    out = fit_lasso("ticker:Y", ["ticker:X1", "ticker:X2", "ticker:X3"], dataset=dataset)
     assert out["alpha_selection"] == "cv"
     assert out["alpha"] > 0
     # CV lasso keeps the two real regressors on this near-noiseless fixture
@@ -199,19 +204,39 @@ def test_lasso_cv_path(dataset: ReturnDataset) -> None:
 
 def test_regularized_validation(dataset: ReturnDataset) -> None:
     with pytest.raises(ValueError, match="alpha must be greater"):
-        fit_ridge(dataset, "ticker:Y", ["ticker:X1"], alpha=0.0)
+        fit_ridge("ticker:Y", ["ticker:X1"], dataset=dataset, alpha=0.0)
     with pytest.raises(ValueError, match="cv_folds"):
-        fit_lasso(dataset, "ticker:Y", ["ticker:X1"], cv_folds=1)
+        fit_lasso("ticker:Y", ["ticker:X1"], dataset=dataset, cv_folds=1)
 
 
 def test_no_series_in_payload(dataset: ReturnDataset) -> None:
     """Coefficients and diagnostics only — never residual/fitted series."""
     for payload in (
-        fit_ols(dataset, "ticker:Y", ["ticker:X1"]),
-        fit_ridge(dataset, "ticker:Y", ["ticker:X1"], alpha=0.1),
-        fit_lasso(dataset, "ticker:Y", ["ticker:X1"], alpha=0.1),
+        fit_ols("ticker:Y", ["ticker:X1"], dataset=dataset),
+        fit_ridge("ticker:Y", ["ticker:X1"], dataset=dataset, alpha=0.1),
+        fit_lasso("ticker:Y", ["ticker:X1"], dataset=dataset, alpha=0.1),
     ):
         flat = json.dumps(payload)
         assert "resid_series" not in flat
         for value in payload.values():
             assert not (isinstance(value, list) and len(value) > 12)
+
+
+def test_fit_ols_reads_returns_from_shared_regime_depot() -> None:
+    """The data_key path must share the SAME returns depot as lazystats.regimes
+    (audit: no new loading code — regression reuses load_from_datahub's store)."""
+    pytest.importorskip("hmmlearn", reason="the shared depot lives in lazystats[regimes]")
+    import numpy as np
+
+    from lazystats.regimes.tools import _swrite
+
+    n = 40
+    x1 = np.array([0.01 * math.sin(0.7 * i) for i in range(n)])
+    y = 0.001 + 2.0 * x1
+    _swrite(
+        "test_regression_depot",
+        {"Y": np.column_stack([y, x1]), "columns": ["Y", "X1"],
+         "index": [f"2024-01-{1 + i:02d}" for i in range(n)]},
+    )
+    out = fit_ols("Y", ["X1"], data_key="test_regression_depot")
+    assert out["coefficients"]["X1"]["coef"] == pytest.approx(2.0, abs=1e-6)
