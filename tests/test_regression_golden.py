@@ -91,6 +91,11 @@ def test_prepare_design_requires_enough_observations() -> None:
         prepare_design(tiny, "ticker:Y", ["ticker:X1"])
 
 
+def test_fit_requires_data_key_or_dataset() -> None:
+    with pytest.raises(ValueError, match="data_key.*dataset"):
+        fit_ols(dependent="ticker:Y", regressors=["ticker:X1"])
+
+
 def test_ols_multivariate_recovers_coefficients(dataset: ReturnDataset) -> None:
     out = fit_ols(dataset, "ticker:Y", ["ticker:X1", "ticker:X2"])
     assert out["model"] == "ols"
@@ -215,3 +220,23 @@ def test_no_series_in_payload(dataset: ReturnDataset) -> None:
         assert "resid_series" not in flat
         for value in payload.values():
             assert not (isinstance(value, list) and len(value) > 12)
+
+
+def test_fit_ols_reads_returns_from_shared_regime_depot() -> None:
+    """The data_key path must share the SAME returns depot as lazystats.regimes
+    (audit: no new loading code — regression reuses load_from_datahub's store)."""
+    pytest.importorskip("hmmlearn", reason="the shared depot lives in lazystats[regimes]")
+    import numpy as np
+
+    from lazystats.regimes.tools import _swrite
+
+    n = 40
+    x1 = np.array([0.01 * math.sin(0.7 * i) for i in range(n)])
+    y = 0.001 + 2.0 * x1
+    _swrite(
+        "test_regression_depot",
+        {"Y": np.column_stack([y, x1]), "columns": ["Y", "X1"],
+         "index": [f"2024-01-{1 + i:02d}" for i in range(n)]},
+    )
+    out = fit_ols(dependent="Y", regressors=["X1"], data_key="test_regression_depot")
+    assert out["coefficients"]["X1"]["coef"] == pytest.approx(2.0, abs=1e-6)
