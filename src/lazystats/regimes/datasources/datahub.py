@@ -74,7 +74,10 @@ def load_from_datahub(
     ``fit_regimes(data_key=...)`` can consume it directly.
 
     Args:
-        symbols: One symbol or a list of symbols (e.g. 'SPY' or ['SPY', 'TLT']).
+        symbols: One symbol, a list of symbols, or a comma/semicolon-separated
+            string (e.g. 'SPY', ['SPY', 'TLT'], or 'SPY,TLT,GLD'). The delimited
+            string form is the one to use across a tool/MCP boundary, where a
+            JSON list cannot be passed.
         start: ISO start date 'YYYY-MM-DD' (or None for earliest available).
         end: ISO end date 'YYYY-MM-DD' (or None for latest available).
         frequency: Resampling frequency passed to extract_returns
@@ -104,6 +107,15 @@ def load_from_datahub(
     Raises:
         ImportError: if the ``market-data-hub`` package is not installed.
     """
+    # ── Normalize a delimited string into a symbol list ─────────────────────
+    # Callers reaching this through an MCP/tool boundary can only pass a scalar
+    # string (a JSON list arrives wrapped as a single element), so accept
+    # comma- or semicolon-separated symbols in one string, e.g. "SPY,TLT,GLD".
+    # A bare single token (no separator) is left untouched to preserve the
+    # exact single-symbol behaviour extract_returns already handles.
+    if isinstance(symbols, str) and ("," in symbols or ";" in symbols):
+        symbols = [s.strip() for s in symbols.replace(";", ",").split(",") if s.strip()]
+
     # ── Lazy, optional import (mirrors the yfinance pattern in lazystats.regimes.db) ──
     # Resolved via the module-level handle so tests can monkeypatch
     # ``lazystats.regimes.datasources.datahub.extract_returns``.

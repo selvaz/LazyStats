@@ -81,6 +81,35 @@ def test_load_from_datahub_return_dict(monkeypatch, synthetic_returns_df):
     assert captured["frequency"] == "W"
 
 
+def test_comma_separated_symbols_string_is_split(monkeypatch, synthetic_returns_df):
+    # Over a tool/MCP boundary `symbols` can only arrive as a scalar string
+    # (a JSON list is wrapped as a single element). A comma- or semicolon-
+    # separated string must be split into a list before it reaches
+    # extract_returns, otherwise it is treated as one (nonexistent) symbol.
+    df = synthetic_returns_df
+    fake, captured = _fake_extract_returns_factory(df)
+    monkeypatch.setattr(datahub_mod, "extract_returns", fake, raising=False)
+
+    out = load_from_datahub("SPY, TLT", data_key="dh_csv")  # note the stray space
+
+    assert captured["symbols"] == ["SPY", "TLT"]  # split + stripped
+    assert out["columns"] == ["SPY", "TLT"]
+    assert out["n_cols"] == 2
+
+
+def test_single_symbol_string_is_left_untouched(monkeypatch):
+    # A bare token (no separator) must stay a plain string to preserve the
+    # exact single-symbol behaviour extract_returns already handles.
+    df = make_multivariate_df(T=40, k=1, seed=11)
+    df.columns = ["SPY"]
+    fake, captured = _fake_extract_returns_factory(df)
+    monkeypatch.setattr(datahub_mod, "extract_returns", fake, raising=False)
+
+    load_from_datahub("SPY", data_key="dh_single")
+
+    assert captured["symbols"] == "SPY"
+
+
 def test_payload_matches_load_time_series_shape(monkeypatch, synthetic_returns_df):
     df = synthetic_returns_df
     fake, _ = _fake_extract_returns_factory(df)
