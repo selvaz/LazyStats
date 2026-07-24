@@ -1119,11 +1119,13 @@ def fit_regimes(
     series_names: Annotated[
         list,
         "Names for each of the k series columns. "
-        "Leave as empty list [] if data_key is used and column names were saved with load_time_series.",
+        "Leave as empty list [] if data_key is used and column names were saved "
+        "by load_time_series() or load_from_datahub().",
     ] = None,
     data_key: Annotated[
         str,
-        "Key of data previously loaded with load_time_series(). "
+        "Key of data previously loaded with load_time_series() (arbitrary series) "
+        "or load_from_datahub() (pulls from market-data-hub directly). "
         "When provided, 'data' and 'series_names' can be omitted. "
         "Preferred path for LLM use — avoids passing large arrays in tool calls.",
     ] = "",
