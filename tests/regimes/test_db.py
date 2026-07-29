@@ -244,3 +244,34 @@ class TestModuleLevelAPI:
         rdb._DB = None
         with pytest.raises(RuntimeError, match="not initialized"):
             rdb.get_db()
+
+
+class TestResolveDepotPath:
+    """resolve_depot_path is the single resolution chain every caller (LazyTools'
+    RegimeTools, the MCP server's regimes/report providers) must route through --
+    two independent copies of this logic is exactly how a caller's explicit
+    init_regime_db() got silently overridden by a different default elsewhere."""
+
+    def test_explicit_wins_over_everything(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LAZYTOOLS_REGIME_DB", str(tmp_path / "env.db"))
+        explicit = str(tmp_path / "explicit.db")
+        assert rdb.resolve_depot_path(explicit) == explicit
+
+    def test_env_var_wins_when_no_explicit(self, monkeypatch, tmp_path):
+        env_path = str(tmp_path / "env.db")
+        monkeypatch.setenv("LAZYTOOLS_REGIME_DB", env_path)
+        assert rdb.resolve_depot_path() == env_path
+
+    def test_falls_back_to_data_dir_default(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("LAZYTOOLS_REGIME_DB", raising=False)
+        monkeypatch.setenv("LAZYTOOLS_DATA_DIR", str(tmp_path))
+        resolved = rdb.resolve_depot_path()
+        assert resolved == str(tmp_path / "regime_depot.db")
+        assert tmp_path.is_dir()  # the data dir must actually exist afterwards
+
+    def test_falls_back_to_home_when_nothing_set(self, monkeypatch):
+        monkeypatch.delenv("LAZYTOOLS_REGIME_DB", raising=False)
+        monkeypatch.delenv("LAZYTOOLS_DATA_DIR", raising=False)
+        import os
+        resolved = rdb.resolve_depot_path()
+        assert resolved == os.path.join(os.path.expanduser("~"), ".lazytools", "regime_depot.db")

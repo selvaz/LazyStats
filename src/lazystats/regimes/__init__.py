@@ -58,6 +58,9 @@ from .tools import (
     regime_params_list,
 )
 
+# ── Depot path resolution: the one function every caller should use ────────
+from .db import resolve_depot_path
+
 # ── Data-source loaders (external providers → depot under a data_key) ──────
 from .datasources import load_from_datahub
 
@@ -92,7 +95,7 @@ __all__ = [
     "regime_params_list",
     # store / persistence
     "connect_lazy_store", "regime_store_list", "regime_store_load",
-    "regime_store_delete", "init_regime_db",
+    "regime_store_delete", "init_regime_db", "resolve_depot_path",
     # data-source loaders
     "load_from_datahub",
     # result contract (lazydatacore envelope)
