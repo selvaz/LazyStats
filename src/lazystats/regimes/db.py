@@ -778,8 +778,9 @@ _CACHE: Dict[str, Any]   = {}   # write-through in-process cache
 def resolve_depot_path(explicit: Optional[str] = None) -> str:
     """The ONE place that decides which depot file a caller should use.
 
-    Precedence: ``explicit`` arg -> ``LAZYTOOLS_REGIME_DB`` env var ->
-    ``<LAZYTOOLS_DATA_DIR or ~/.lazytools>/regime_depot.db``.
+    Precedence: ``explicit`` arg -> the ALREADY-ACTIVE depot's own path (if
+    ``init_regime_db`` already ran in this process) -> ``LAZYTOOLS_REGIME_DB``
+    env var -> ``<LAZYTOOLS_DATA_DIR or ~/.lazytools>/regime_depot.db``.
 
     This exists because every caller used to compute this default itself
     (lazytools.connectors.regimes.RegimeTools had its own copy of this exact
@@ -788,9 +789,17 @@ def resolve_depot_path(explicit: Optional[str] = None) -> str:
     overridden by a *different* caller's `RegimeTools(db_path=None)` later in
     the same process, each computing its own idea of the default. Route every
     caller through this single function instead.
+
+    The active-depot check matters on its own, independent of that: even with
+    ONE resolver, a caller passing no explicit path must never silently
+    redirect an already-initialized depot to a *different* file just because
+    it didn't ask for one -- it should default to "whatever is already
+    running", not "recompute env/default and switch to that".
     """
     if explicit:
         return explicit
+    if _DB is not None:
+        return _DB.db_path
     env = os.environ.get("LAZYTOOLS_REGIME_DB")
     if env:
         return env
