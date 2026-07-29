@@ -244,3 +244,56 @@ class TestModuleLevelAPI:
         rdb._DB = None
         with pytest.raises(RuntimeError, match="not initialized"):
             rdb.get_db()
+
+
+class TestResolveDepotPath:
+    """resolve_depot_path is the single resolution chain every caller (LazyTools'
+    RegimeTools, the MCP server's regimes/report providers) must route through --
+    two independent copies of this logic is exactly how a caller's explicit
+    init_regime_db() got silently overridden by a different default elsewhere."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_active_depot(self):
+        # _DB is a process-wide global (see Group 4 below) -- reset it around
+        # every test in this class so "no active depot" tests aren't polluted
+        # by whatever ran earlier in the same pytest session, and so a test
+        # that does init_regime_db() doesn't leak into the next one.
+        rdb._DB = None
+        yield
+        rdb._DB = None
+
+    def test_explicit_wins_over_everything(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LAZYTOOLS_REGIME_DB", str(tmp_path / "env.db"))
+        rdb.init_regime_db(str(tmp_path / "active.db"))
+        explicit = str(tmp_path / "explicit.db")
+        assert rdb.resolve_depot_path(explicit) == explicit
+
+    def test_active_depot_wins_over_env_and_default(self, monkeypatch, tmp_path):
+        """The exact regression an earlier version of this resolver reintroduced
+        one level down: init_regime_db("/custom/path.db") already ran, then a
+        DIFFERENT caller asks for the default (no explicit path) -- it must get
+        back the depot that's already running, never a freshly recomputed
+        env/default that would silently redirect it to another file."""
+        monkeypatch.setenv("LAZYTOOLS_REGIME_DB", str(tmp_path / "env.db"))
+        active_path = str(tmp_path / "active.db")
+        rdb.init_regime_db(active_path)
+        assert rdb.resolve_depot_path() == active_path
+
+    def test_env_var_wins_when_no_explicit_and_no_active_depot(self, monkeypatch, tmp_path):
+        env_path = str(tmp_path / "env.db")
+        monkeypatch.setenv("LAZYTOOLS_REGIME_DB", env_path)
+        assert rdb.resolve_depot_path() == env_path
+
+    def test_falls_back_to_data_dir_default(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("LAZYTOOLS_REGIME_DB", raising=False)
+        monkeypatch.setenv("LAZYTOOLS_DATA_DIR", str(tmp_path))
+        resolved = rdb.resolve_depot_path()
+        assert resolved == str(tmp_path / "regime_depot.db")
+        assert tmp_path.is_dir()  # the data dir must actually exist afterwards
+
+    def test_falls_back_to_home_when_nothing_set(self, monkeypatch):
+        monkeypatch.delenv("LAZYTOOLS_REGIME_DB", raising=False)
+        monkeypatch.delenv("LAZYTOOLS_DATA_DIR", raising=False)
+        import os
+        resolved = rdb.resolve_depot_path()
+        assert resolved == os.path.join(os.path.expanduser("~"), ".lazytools", "regime_depot.db")
