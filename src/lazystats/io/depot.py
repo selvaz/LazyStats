@@ -269,6 +269,18 @@ class ResultDepot:
         differs. A rerun of the *same* ``estimation_date`` does replace that
         one row in place (see the upsert below).
 
+        Known limitation: rewriting an *older* ``estimation_date`` (e.g. a
+        manual backfill correction) after a *later* ``estimation_date`` was
+        already checked and found unchanged (and therefore never got its own
+        row — that's the whole point of append-on-change) can make
+        :meth:`get_series_latest` report the older rewrite's value instead of
+        the confirmed-later one, because there is no row recording that the
+        later check ever happened. Every caller in this codebase always
+        writes with ``estimation_date`` = "today" (never an out-of-order
+        backfill of an older date after newer ones exist), so this does not
+        arise in practice today; a caller that does rerun out-of-order older
+        dates should be aware of it.
+
         Args:
             compare_keys: If given, only these keys of ``value`` (and of the
                 baseline it's compared against) decide whether the reading
