@@ -314,6 +314,50 @@ def test_depot_migration_idempotent(tmp_path) -> None:
     depot2.close()
 
 
+def test_depot_never_downgrades_newer_schema_marker(tmp_path) -> None:
+    """A depot already stamped with a schema_version newer than this
+    build's _SCHEMA_VERSION must keep that marker -- opening it here must
+    not silently roll it back to 2, which would let an even-newer process
+    later re-run migrations against an already-migrated schema."""
+    path = str(tmp_path / "future_schema.sqlite")
+    depot = ResultDepot(path)
+    depot._con.execute(
+        "UPDATE depot_meta SET value = '99' WHERE key = 'schema_version'"
+    )
+    depot._con.commit()
+    depot.close()
+
+    depot2 = ResultDepot(path)
+    version = depot2._con.execute(
+        "SELECT value FROM depot_meta WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    assert version == "99"
+    depot2.close()
+
+
+def test_depot_save_with_result_id_upserts_in_place(tmp_path) -> None:
+    """save(result_id=...) must replace that row's content rather than
+    inserting a duplicate -- e.g. a scheduled job rerunning the same day
+    should update its own diagnostics result, not accumulate a second one
+    that stable_series_points' informational result_id can't distinguish
+    from the first."""
+    depot = ResultDepot(str(tmp_path / "upsert.sqlite"))
+
+    rid = depot.save(kind="regime", produced_by="x", instruments=["SPY"],
+                     payload={"bic": 1.0}, provenance={"source": "test"},
+                     cadence="stable", series_key="regime:SPY")
+
+    rid2 = depot.save(kind="regime", produced_by="x", instruments=["SPY"],
+                      payload={"bic": 2.0}, provenance={"source": "test"},
+                      cadence="stable", series_key="regime:SPY", result_id=rid)
+
+    assert rid2 == rid
+    assert len(depot.list(cadence="stable")) == 1
+    assert depot.load(rid)["payload"]["bic"] == 2.0
+
+    depot.close()
+
+
 def test_local_csv_loader(tmp_path) -> None:
     csv_path = tmp_path / "returns.csv"
     csv_path.write_text(

@@ -89,10 +89,18 @@ class ResultDepot:
         self._con = sqlite3.connect(path)
         self._con.executescript(_SCHEMA)
         self._migrate()
-        self._con.execute(
-            "INSERT OR REPLACE INTO depot_meta (key, value) VALUES ('schema_version', ?)",
-            (str(_SCHEMA_VERSION),),
-        )
+        # Never downgrade an existing marker: a depot already stamped with a
+        # newer schema version (e.g. by a later release opened once against
+        # this same file) must keep that marker, not have it silently
+        # replaced by this version's number.
+        existing_version = self._con.execute(
+            "SELECT value FROM depot_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        if existing_version is None or int(existing_version[0]) < _SCHEMA_VERSION:
+            self._con.execute(
+                "INSERT OR REPLACE INTO depot_meta (key, value) VALUES ('schema_version', ?)",
+                (str(_SCHEMA_VERSION),),
+            )
         self._con.commit()
 
     def _migrate(self) -> None:
@@ -124,7 +132,19 @@ class ResultDepot:
         provenance: dict[str, Any],
         cadence: str = "adhoc",
         series_key: str | None = None,
+        result_id: str | None = None,
     ) -> str:
+        """Insert (or, if ``result_id`` is given, replace) one analysis result.
+
+        Args:
+            result_id: If given, upserts that existing row in place instead
+                of creating a new one -- for a caller that reruns the same
+                logical unit of work (e.g. a scheduled job rerun the same
+                day) and wants its diagnostics updated, not duplicated,
+                while anything that already referenced the old
+                ``result_id`` (e.g. :meth:`save_stable_point`'s informational
+                ``result_id`` column) stays valid. Omit for a fresh result.
+        """
         if not provenance:
             raise ValueError("provenance is mandatory: a result without its "
                              "inputs is not reproducible")
@@ -137,11 +157,17 @@ class ResultDepot:
             )
         if cadence != "stable":
             series_key = None
-        result_id = f"res_{uuid.uuid4().hex[:12]}"
+        if result_id is None:
+            result_id = f"res_{uuid.uuid4().hex[:12]}"
         self._con.execute(
             "INSERT INTO analysis_results "
             "(result_id, kind, produced_by, instruments, payload, provenance, "
-            "created_at, cadence, series_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, cadence, series_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(result_id) DO UPDATE SET "
+            "kind=excluded.kind, produced_by=excluded.produced_by, "
+            "instruments=excluded.instruments, payload=excluded.payload, "
+            "provenance=excluded.provenance, created_at=excluded.created_at, "
+            "cadence=excluded.cadence, series_key=excluded.series_key",
             (
                 result_id,
                 kind,
