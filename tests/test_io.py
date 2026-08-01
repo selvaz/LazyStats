@@ -355,6 +355,33 @@ def test_depot_save_with_result_id_upserts_in_place(tmp_path) -> None:
     assert len(depot.list(cadence="stable")) == 1
     assert depot.load(rid)["payload"]["bic"] == 2.0
 
+
+def test_depot_save_generated_id_collision_raises_not_overwrites(tmp_path) -> None:
+    """A caller that does NOT supply result_id never intends an upsert -- if
+    an auto-generated id happens to collide with an existing row (~0.18%
+    chance at 1M stored results, per a 12-hex-char/48-bit id), that must
+    fail loudly (IntegrityError), not silently overwrite the unrelated
+    prior result the way an explicit, intentional result_id= rerun does."""
+    import sqlite3
+    import uuid
+
+    depot = ResultDepot(str(tmp_path / "collision.sqlite"))
+    fixed_uuid = uuid.uuid4()
+
+    with pytest.MonkeyPatch.context() as mp:
+        # Force two independent, non-upsert save() calls to generate the
+        # *same* id, simulating an accidental collision.
+        mp.setattr(uuid, "uuid4", lambda: fixed_uuid)
+        depot.save(kind="report", produced_by="x", instruments=[],
+                  payload={"v": 1}, provenance={"source": "test"})
+        with pytest.raises(sqlite3.IntegrityError):
+            depot.save(kind="report", produced_by="x", instruments=[],
+                      payload={"v": 2}, provenance={"source": "test"})
+
+    # The original result must survive untouched.
+    result_id = f"res_{fixed_uuid.hex[:12]}"
+    assert depot.load(result_id)["payload"]["v"] == 1
+
     depot.close()
 
 

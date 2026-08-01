@@ -157,17 +157,31 @@ class ResultDepot:
             )
         if cadence != "stable":
             series_key = None
+        # Only an explicit, caller-supplied result_id is treated as an
+        # intentional upsert. A generated id is 12 hex chars (48 bits) --
+        # astronomically unlikely to collide, but not impossible at a large
+        # or long-lived depot's row count -- and an accidental collision on
+        # a *generated* id must fail loudly (IntegrityError), not silently
+        # overwrite an unrelated prior result the same way a genuine rerun
+        # would.
+        upsert = result_id is not None
         if result_id is None:
             result_id = f"res_{uuid.uuid4().hex[:12]}"
-        self._con.execute(
+        sql = (
             "INSERT INTO analysis_results "
             "(result_id, kind, produced_by, instruments, payload, provenance, "
-            "created_at, cadence, series_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(result_id) DO UPDATE SET "
-            "kind=excluded.kind, produced_by=excluded.produced_by, "
-            "instruments=excluded.instruments, payload=excluded.payload, "
-            "provenance=excluded.provenance, created_at=excluded.created_at, "
-            "cadence=excluded.cadence, series_key=excluded.series_key",
+            "created_at, cadence, series_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        if upsert:
+            sql += (
+                " ON CONFLICT(result_id) DO UPDATE SET "
+                "kind=excluded.kind, produced_by=excluded.produced_by, "
+                "instruments=excluded.instruments, payload=excluded.payload, "
+                "provenance=excluded.provenance, created_at=excluded.created_at, "
+                "cadence=excluded.cadence, series_key=excluded.series_key"
+            )
+        self._con.execute(
+            sql,
             (
                 result_id,
                 kind,
