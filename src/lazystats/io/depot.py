@@ -248,10 +248,19 @@ class ResultDepot:
             )
             if existing_value_json == new_value_json:
                 return False
+        # ON CONFLICT, not a plain INSERT: a same-day rerun (the estimation_date
+        # passed in is identical to the row just compared above, not a new one)
+        # whose refit produced a different value must replace that row in
+        # place -- it's the same estimation event, not a new vintage -- rather
+        # than violating the (series_key, as_of_date, estimation_date) UNIQUE
+        # constraint and crashing the caller.
         self._con.execute(
             "INSERT INTO stable_series_points "
             "(series_key, as_of_date, estimation_date, value_json, result_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(series_key, as_of_date, estimation_date) DO UPDATE SET "
+            "value_json=excluded.value_json, result_id=excluded.result_id, "
+            "created_at=excluded.created_at",
             (
                 series_key,
                 as_of_date,

@@ -121,6 +121,35 @@ def test_depot_save_stable_point_append_on_change(tmp_path) -> None:
     depot.close()
 
 
+def test_depot_save_stable_point_same_day_rerun_replaces_not_crashes(tmp_path) -> None:
+    """A same-day rerun (identical estimation_date) whose refit produced a
+    different value must replace that row in place, not raise a UNIQUE
+    constraint violation -- this is the same estimation event, not a new
+    vintage. Regression test: a plain INSERT here previously crashed with
+    sqlite3.IntegrityError on the (series_key, as_of_date, estimation_date)
+    PRIMARY KEY."""
+    depot = ResultDepot(str(tmp_path / "rerun.sqlite"))
+    series_key = "spy_regime_daily"
+
+    first = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01",
+        estimation_date="2024-01-01", value={"state": 0},
+    )
+    assert first is True
+
+    rerun = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01",
+        estimation_date="2024-01-01", value={"state": 1},
+    )
+    assert rerun is True
+
+    vintages = depot.list_series_vintages(series_key, "2024-01-01")
+    assert len(vintages) == 1, "must replace in place, not accumulate a duplicate vintage row"
+    assert vintages[0]["value"]["state"] == 1
+
+    depot.close()
+
+
 def test_depot_list_series_vintages(tmp_path) -> None:
     depot = ResultDepot(str(tmp_path / "vintages.sqlite"))
     series_key = "spy_regime_daily"
