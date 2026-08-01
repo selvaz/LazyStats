@@ -128,6 +128,8 @@ class ResultDepot:
         if not provenance:
             raise ValueError("provenance is mandatory: a result without its "
                              "inputs is not reproducible")
+        if cadence not in ("stable", "adhoc"):
+            raise ValueError(f"cadence must be 'stable' or 'adhoc', got {cadence!r}")
         if cadence == "stable" and not series_key:
             raise ValueError(
                 "series_key is mandatory when cadence='stable': a stable "
@@ -222,31 +224,51 @@ class ResultDepot:
         estimation_date: str,
         value: Any,
         result_id: str | None = None,
+        compare_keys: builtins.list[str] | None = None,
     ) -> bool:
         """Append-on-change write of one trading date's reading.
 
-        Looks up the most recent existing row for ``(series_key, as_of_date)``
-        (max ``estimation_date``). If none exists, or the new ``value``
-        differs from the most recently stored one, inserts a new row (with
-        ``estimation_date`` = the one passed in) and returns ``True``. If the
-        value is unchanged, does nothing and returns ``False``.
+        Looks up the existing row for ``(series_key, as_of_date)`` with the
+        highest ``estimation_date`` that is not later than the one being
+        written (i.e. this call's own row if it already exists, otherwise
+        the most recent prior vintage) — never a later, out-of-order vintage
+        that happens to exist for the same ``as_of_date``. If none exists, or
+        the new ``value`` differs from that baseline, inserts/upserts a row
+        (with ``estimation_date`` = the one passed in) and returns ``True``.
+        If unchanged, does nothing and returns ``False``.
 
-        A past ``(as_of_date, estimation_date)`` row is never overwritten —
-        only superseded by a new row for a new ``estimation_date`` once the
-        reading for that ``as_of_date`` actually differs.
+        A past ``(as_of_date, estimation_date)`` row is never overwritten by
+        a *later* one — only superseded by a new row for a new
+        ``estimation_date`` once the reading for that ``as_of_date`` actually
+        differs. A rerun of the *same* ``estimation_date`` does replace that
+        one row in place (see the upsert below).
+
+        Args:
+            compare_keys: If given, only these keys of ``value`` (and of the
+                baseline it's compared against) decide whether the reading
+                "changed" — e.g. a caller whose ``value`` also carries
+                continuously-varying fields (probabilities, scores) that
+                would otherwise make every call look like a change. The full
+                ``value`` is still what gets stored either way. If a key is
+                absent from either side, it's treated as ``None`` for the
+                comparison rather than raising.
         """
         row = self._con.execute(
             "SELECT value_json FROM stable_series_points "
-            "WHERE series_key = ? AND as_of_date = ? "
+            "WHERE series_key = ? AND as_of_date = ? AND estimation_date <= ? "
             "ORDER BY estimation_date DESC LIMIT 1",
-            (series_key, as_of_date),
+            (series_key, as_of_date, estimation_date),
         ).fetchone()
+
+        def _comparable(v: Any) -> str:
+            if compare_keys is not None:
+                v = {k: v.get(k) for k in compare_keys} if isinstance(v, dict) else v
+            return json.dumps(v, sort_keys=True, default=str)
+
         new_value_json = json.dumps(value, sort_keys=True, default=str)
         if row is not None:
-            existing_value_json = json.dumps(
-                json.loads(row[0]), sort_keys=True, default=str
-            )
-            if existing_value_json == new_value_json:
+            existing_value = json.loads(row[0])
+            if _comparable(existing_value) == _comparable(value):
                 return False
         # ON CONFLICT, not a plain INSERT: a same-day rerun (the estimation_date
         # passed in is identical to the row just compared above, not a new one)

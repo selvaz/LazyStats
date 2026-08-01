@@ -52,6 +52,18 @@ def test_depot_save_stable_requires_series_key(tmp_path) -> None:
     depot.close()
 
 
+def test_depot_save_rejects_unsupported_cadence(tmp_path) -> None:
+    """A misspelled cadence (e.g. "Stable") must not silently fall through
+    to the adhoc branch and get stored as-is -- it would then appear in
+    neither list(cadence="stable") nor list(cadence="adhoc")."""
+    depot = ResultDepot(str(tmp_path / "bad_cadence.sqlite"))
+    with pytest.raises(ValueError, match="cadence"):
+        depot.save(kind="regime", produced_by="x", instruments=[],
+                   payload={}, provenance={"source": "test"}, cadence="Stable",
+                   series_key="regime:SPY")
+    depot.close()
+
+
 def test_depot_save_adhoc_default_unchanged(tmp_path) -> None:
     """cadence defaults to 'adhoc' and existing callers keep working exactly
     as before: no series_key required, and load()/list() gain the new
@@ -146,6 +158,76 @@ def test_depot_save_stable_point_same_day_rerun_replaces_not_crashes(tmp_path) -
     vintages = depot.list_series_vintages(series_key, "2024-01-01")
     assert len(vintages) == 1, "must replace in place, not accumulate a duplicate vintage row"
     assert vintages[0]["value"]["state"] == 1
+
+    depot.close()
+
+
+def test_depot_save_stable_point_rerun_of_older_estimation_compares_correctly(tmp_path) -> None:
+    """Reranking an *older* estimation_date after a *later* vintage already
+    exists for the same as_of_date must compare against (and, if changed,
+    replace) that older row -- not silently no-op just because its value
+    happens to match the unrelated, chronologically-later vintage.
+
+    Regression test: comparing against "the most recent vintage overall"
+    (rather than the vintage at-or-before the estimation_date being written)
+    let a stale value survive under exactly this out-of-order-rerun
+    scenario."""
+    depot = ResultDepot(str(tmp_path / "out_of_order.sqlite"))
+    series_key = "spy_regime_daily"
+
+    # Jan 1 estimated on Jan 1: state A.
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-01", value={"state": "A"})
+    # A later refit (Jan 3) revises Jan 1's own reading to B.
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-03", value={"state": "B"})
+
+    # Now rerun the ORIGINAL Jan-1 estimation with B (matching the Jan-3
+    # vintage, but not the Jan-1 row itself) -- must detect this as a change
+    # against the Jan-1 row (still "A") and fix it in place, not compare
+    # against the unrelated Jan-3 "B" vintage and wrongly no-op.
+    fixed = depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                                    estimation_date="2024-01-01", value={"state": "B"})
+    assert fixed is True
+
+    vintages = {v["estimation_date"]: v["value"]["state"] for v in
+                depot.list_series_vintages(series_key, "2024-01-01")}
+    assert vintages == {"2024-01-01": "B", "2024-01-03": "B"}
+
+    depot.close()
+
+
+def test_depot_save_stable_point_compare_keys_ignores_other_fields(tmp_path) -> None:
+    """A caller can restrict change-detection to a subset of `value`'s keys
+    (e.g. a discrete regime label) so continuously-varying fields stored
+    alongside it (probabilities, scores) don't make every call look like a
+    change -- while still persisting the full value either way."""
+    depot = ResultDepot(str(tmp_path / "compare_keys.sqlite"))
+    series_key = "spy_regime_daily"
+
+    depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01", estimation_date="2024-01-01",
+        value={"state": 0, "prob_high_vol": 0.10}, compare_keys=["state"],
+    )
+
+    # Only prob_high_vol drifted (the normal effect of one more observation) --
+    # compare_keys=["state"] must treat this as unchanged.
+    unchanged = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01", estimation_date="2024-01-02",
+        value={"state": 0, "prob_high_vol": 0.11}, compare_keys=["state"],
+    )
+    assert unchanged is False
+
+    # The discrete state itself changing must still be detected.
+    changed = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01", estimation_date="2024-01-03",
+        value={"state": 1, "prob_high_vol": 0.12}, compare_keys=["state"],
+    )
+    assert changed is True
+
+    vintages = depot.list_series_vintages(series_key, "2024-01-01")
+    assert len(vintages) == 2  # the unchanged prob-only call never wrote a row
+    assert vintages[-1]["value"] == {"state": 1, "prob_high_vol": 0.12}  # full value stored
 
     depot.close()
 
