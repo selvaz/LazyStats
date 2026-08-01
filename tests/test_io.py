@@ -44,6 +44,347 @@ def test_depot_refuses_missing_provenance(tmp_path) -> None:
                    payload={}, provenance={})
 
 
+def test_depot_save_stable_requires_series_key(tmp_path) -> None:
+    depot = ResultDepot(str(tmp_path / "stable_requires_key.sqlite"))
+    with pytest.raises(ValueError, match="series_key"):
+        depot.save(kind="regime", produced_by="x", instruments=[],
+                   payload={}, provenance={"source": "test"}, cadence="stable")
+    depot.close()
+
+
+def test_depot_save_rejects_unsupported_cadence(tmp_path) -> None:
+    """A misspelled cadence (e.g. "Stable") must not silently fall through
+    to the adhoc branch and get stored as-is -- it would then appear in
+    neither list(cadence="stable") nor list(cadence="adhoc")."""
+    depot = ResultDepot(str(tmp_path / "bad_cadence.sqlite"))
+    with pytest.raises(ValueError, match="cadence"):
+        depot.save(kind="regime", produced_by="x", instruments=[],
+                   payload={}, provenance={"source": "test"}, cadence="Stable",
+                   series_key="regime:SPY")
+    depot.close()
+
+
+def test_depot_save_adhoc_default_unchanged(tmp_path) -> None:
+    """cadence defaults to 'adhoc' and existing callers keep working exactly
+    as before: no series_key required, and load()/list() gain the new
+    cadence/series_key fields without breaking the old ones."""
+    depot = ResultDepot(str(tmp_path / "adhoc.sqlite"))
+    rid = depot.save(
+        kind="report", produced_by="lazystats.core.return_volatility",
+        instruments=["ticker:SPY"], payload={"a": 1},
+        provenance={"source": "test"},
+    )
+    loaded = depot.load(rid)
+    assert loaded["cadence"] == "adhoc"
+    assert loaded["series_key"] is None
+    index = depot.list(produced_by="lazystats.core.return_volatility")
+    assert index[0]["cadence"] == "adhoc"
+    assert index[0]["series_key"] is None
+    depot.close()
+
+
+def test_depot_save_stable_with_series_key(tmp_path) -> None:
+    depot = ResultDepot(str(tmp_path / "stable.sqlite"))
+    rid = depot.save(
+        kind="regime", produced_by="lazyhmm.fit", instruments=["ticker:SPY"],
+        payload={"n_states": 2}, provenance={"source": "test"},
+        cadence="stable", series_key="spy_regime_daily",
+    )
+    loaded = depot.load(rid)
+    assert loaded["cadence"] == "stable"
+    assert loaded["series_key"] == "spy_regime_daily"
+    index = depot.list(cadence="stable")
+    assert index[0]["result_id"] == rid
+    assert depot.list(cadence="adhoc") == []
+    depot.close()
+
+
+def test_depot_save_stable_point_append_on_change(tmp_path) -> None:
+    depot = ResultDepot(str(tmp_path / "points.sqlite"))
+    series_key = "spy_regime_daily"
+
+    inserted = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01",
+        estimation_date="2024-01-01", value={"state": 0, "label": "low_vol"},
+    )
+    assert inserted is True
+
+    # Same value, same estimation_date re-run -> no-op.
+    inserted_again = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01",
+        estimation_date="2024-01-01", value={"state": 0, "label": "low_vol"},
+    )
+    assert inserted_again is False
+
+    # Same value, later estimation_date -> still unchanged, no-op.
+    unchanged_later = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01",
+        estimation_date="2024-01-02", value={"state": 0, "label": "low_vol"},
+    )
+    assert unchanged_later is False
+
+    # Genuinely different value, new estimation_date -> revision inserted.
+    revised = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01",
+        estimation_date="2024-01-03", value={"state": 1, "label": "high_vol"},
+    )
+    assert revised is True
+
+    depot.close()
+
+
+def test_depot_save_stable_point_same_day_rerun_replaces_not_crashes(tmp_path) -> None:
+    """A same-day rerun (identical estimation_date) whose refit produced a
+    different value must replace that row in place, not raise a UNIQUE
+    constraint violation -- this is the same estimation event, not a new
+    vintage. Regression test: a plain INSERT here previously crashed with
+    sqlite3.IntegrityError on the (series_key, as_of_date, estimation_date)
+    PRIMARY KEY."""
+    depot = ResultDepot(str(tmp_path / "rerun.sqlite"))
+    series_key = "spy_regime_daily"
+
+    first = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01",
+        estimation_date="2024-01-01", value={"state": 0},
+    )
+    assert first is True
+
+    rerun = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01",
+        estimation_date="2024-01-01", value={"state": 1},
+    )
+    assert rerun is True
+
+    vintages = depot.list_series_vintages(series_key, "2024-01-01")
+    assert len(vintages) == 1, "must replace in place, not accumulate a duplicate vintage row"
+    assert vintages[0]["value"]["state"] == 1
+
+    depot.close()
+
+
+def test_depot_save_stable_point_rerun_of_older_estimation_compares_correctly(tmp_path) -> None:
+    """Reranking an *older* estimation_date after a *later* vintage already
+    exists for the same as_of_date must compare against (and, if changed,
+    replace) that older row -- not silently no-op just because its value
+    happens to match the unrelated, chronologically-later vintage.
+
+    Regression test: comparing against "the most recent vintage overall"
+    (rather than the vintage at-or-before the estimation_date being written)
+    let a stale value survive under exactly this out-of-order-rerun
+    scenario."""
+    depot = ResultDepot(str(tmp_path / "out_of_order.sqlite"))
+    series_key = "spy_regime_daily"
+
+    # Jan 1 estimated on Jan 1: state A.
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-01", value={"state": "A"})
+    # A later refit (Jan 3) revises Jan 1's own reading to B.
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-03", value={"state": "B"})
+
+    # Now rerun the ORIGINAL Jan-1 estimation with B (matching the Jan-3
+    # vintage, but not the Jan-1 row itself) -- must detect this as a change
+    # against the Jan-1 row (still "A") and fix it in place, not compare
+    # against the unrelated Jan-3 "B" vintage and wrongly no-op.
+    fixed = depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                                    estimation_date="2024-01-01", value={"state": "B"})
+    assert fixed is True
+
+    vintages = {v["estimation_date"]: v["value"]["state"] for v in
+                depot.list_series_vintages(series_key, "2024-01-01")}
+    assert vintages == {"2024-01-01": "B", "2024-01-03": "B"}
+
+    depot.close()
+
+
+def test_depot_save_stable_point_compare_keys_ignores_other_fields(tmp_path) -> None:
+    """A caller can restrict change-detection to a subset of `value`'s keys
+    (e.g. a discrete regime label) so continuously-varying fields stored
+    alongside it (probabilities, scores) don't make every call look like a
+    change -- while still persisting the full value either way."""
+    depot = ResultDepot(str(tmp_path / "compare_keys.sqlite"))
+    series_key = "spy_regime_daily"
+
+    depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01", estimation_date="2024-01-01",
+        value={"state": 0, "prob_high_vol": 0.10}, compare_keys=["state"],
+    )
+
+    # Only prob_high_vol drifted (the normal effect of one more observation) --
+    # compare_keys=["state"] must treat this as unchanged.
+    unchanged = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01", estimation_date="2024-01-02",
+        value={"state": 0, "prob_high_vol": 0.11}, compare_keys=["state"],
+    )
+    assert unchanged is False
+
+    # The discrete state itself changing must still be detected.
+    changed = depot.save_stable_point(
+        series_key=series_key, as_of_date="2024-01-01", estimation_date="2024-01-03",
+        value={"state": 1, "prob_high_vol": 0.12}, compare_keys=["state"],
+    )
+    assert changed is True
+
+    vintages = depot.list_series_vintages(series_key, "2024-01-01")
+    assert len(vintages) == 2  # the unchanged prob-only call never wrote a row
+    assert vintages[-1]["value"] == {"state": 1, "prob_high_vol": 0.12}  # full value stored
+
+    depot.close()
+
+
+def test_depot_list_series_vintages(tmp_path) -> None:
+    depot = ResultDepot(str(tmp_path / "vintages.sqlite"))
+    series_key = "spy_regime_daily"
+
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-01", value={"state": 0})
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-02", value={"state": 1})
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-03", value={"state": 1})  # no-op
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-04", value={"state": 2})
+
+    vintages = depot.list_series_vintages(series_key, "2024-01-01")
+    assert [v["estimation_date"] for v in vintages] == ["2024-01-01", "2024-01-02", "2024-01-04"]
+    assert [v["value"]["state"] for v in vintages] == [0, 1, 2]
+    depot.close()
+
+
+def test_depot_get_series_latest(tmp_path) -> None:
+    depot = ResultDepot(str(tmp_path / "latest.sqlite"))
+    series_key = "spy_regime_daily"
+
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-01", value={"state": 0})
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-01",
+                            estimation_date="2024-01-03", value={"state": 1})
+    depot.save_stable_point(series_key=series_key, as_of_date="2024-01-02",
+                            estimation_date="2024-01-02", value={"state": 1})
+
+    latest = depot.get_series_latest(series_key)
+    assert [row["as_of_date"] for row in latest] == ["2024-01-01", "2024-01-02"]
+    assert latest[0]["estimation_date"] == "2024-01-03"
+    assert latest[0]["value"]["state"] == 1  # the revised value, not the original 0
+    assert latest[1]["value"]["state"] == 1
+
+    filtered = depot.get_series_latest(series_key, since="2024-01-02")
+    assert [row["as_of_date"] for row in filtered] == ["2024-01-02"]
+    depot.close()
+
+
+def test_depot_save_and_get_detail(tmp_path) -> None:
+    depot = ResultDepot(str(tmp_path / "detail.sqlite"))
+    rid = depot.save(kind="ols", produced_by="x", instruments=[],
+                     payload={}, provenance={"source": "test"})
+
+    assert depot.get_detail(rid, "residuals") is None
+
+    depot.save_detail(rid, "residuals", b"first-blob")
+    assert depot.get_detail(rid, "residuals") == b"first-blob"
+
+    depot.save_detail(rid, "residuals", b"second-blob")
+    assert depot.get_detail(rid, "residuals") == b"second-blob"
+
+    depot.save_detail(rid, "predictions", b"other-detail-type")
+    assert depot.get_detail(rid, "predictions") == b"other-detail-type"
+    assert depot.get_detail(rid, "residuals") == b"second-blob"
+
+    depot.close()
+
+
+def test_depot_migration_idempotent(tmp_path) -> None:
+    """Re-opening an already-migrated depot file must not error, and must not
+    duplicate or lose the v2 columns."""
+    path = str(tmp_path / "reopen.sqlite")
+    depot1 = ResultDepot(path)
+    rid = depot1.save(kind="report", produced_by="x", instruments=[],
+                      payload={}, provenance={"source": "test"},
+                      cadence="stable", series_key="k")
+    depot1.close()
+
+    depot2 = ResultDepot(path)
+    loaded = depot2.load(rid)
+    assert loaded["cadence"] == "stable"
+    assert loaded["series_key"] == "k"
+    cols = {row[1] for row in depot2._con.execute(
+        "PRAGMA table_info(analysis_results)").fetchall()}
+    assert cols == {"result_id", "kind", "produced_by", "instruments",
+                    "payload", "provenance", "created_at", "cadence", "series_key"}
+    depot2.close()
+
+
+def test_depot_never_downgrades_newer_schema_marker(tmp_path) -> None:
+    """A depot already stamped with a schema_version newer than this
+    build's _SCHEMA_VERSION must keep that marker -- opening it here must
+    not silently roll it back to 2, which would let an even-newer process
+    later re-run migrations against an already-migrated schema."""
+    path = str(tmp_path / "future_schema.sqlite")
+    depot = ResultDepot(path)
+    depot._con.execute(
+        "UPDATE depot_meta SET value = '99' WHERE key = 'schema_version'"
+    )
+    depot._con.commit()
+    depot.close()
+
+    depot2 = ResultDepot(path)
+    version = depot2._con.execute(
+        "SELECT value FROM depot_meta WHERE key = 'schema_version'"
+    ).fetchone()[0]
+    assert version == "99"
+    depot2.close()
+
+
+def test_depot_save_with_result_id_upserts_in_place(tmp_path) -> None:
+    """save(result_id=...) must replace that row's content rather than
+    inserting a duplicate -- e.g. a scheduled job rerunning the same day
+    should update its own diagnostics result, not accumulate a second one
+    that stable_series_points' informational result_id can't distinguish
+    from the first."""
+    depot = ResultDepot(str(tmp_path / "upsert.sqlite"))
+
+    rid = depot.save(kind="regime", produced_by="x", instruments=["SPY"],
+                     payload={"bic": 1.0}, provenance={"source": "test"},
+                     cadence="stable", series_key="regime:SPY")
+
+    rid2 = depot.save(kind="regime", produced_by="x", instruments=["SPY"],
+                      payload={"bic": 2.0}, provenance={"source": "test"},
+                      cadence="stable", series_key="regime:SPY", result_id=rid)
+
+    assert rid2 == rid
+    assert len(depot.list(cadence="stable")) == 1
+    assert depot.load(rid)["payload"]["bic"] == 2.0
+
+
+def test_depot_save_generated_id_collision_raises_not_overwrites(tmp_path) -> None:
+    """A caller that does NOT supply result_id never intends an upsert -- if
+    an auto-generated id happens to collide with an existing row (~0.18%
+    chance at 1M stored results, per a 12-hex-char/48-bit id), that must
+    fail loudly (IntegrityError), not silently overwrite the unrelated
+    prior result the way an explicit, intentional result_id= rerun does."""
+    import sqlite3
+    import uuid
+
+    depot = ResultDepot(str(tmp_path / "collision.sqlite"))
+    fixed_uuid = uuid.uuid4()
+
+    with pytest.MonkeyPatch.context() as mp:
+        # Force two independent, non-upsert save() calls to generate the
+        # *same* id, simulating an accidental collision.
+        mp.setattr(uuid, "uuid4", lambda: fixed_uuid)
+        depot.save(kind="report", produced_by="x", instruments=[],
+                  payload={"v": 1}, provenance={"source": "test"})
+        with pytest.raises(sqlite3.IntegrityError):
+            depot.save(kind="report", produced_by="x", instruments=[],
+                      payload={"v": 2}, provenance={"source": "test"})
+
+    # The original result must survive untouched.
+    result_id = f"res_{fixed_uuid.hex[:12]}"
+    assert depot.load(result_id)["payload"]["v"] == 1
+
+    depot.close()
+
+
 def test_local_csv_loader(tmp_path) -> None:
     csv_path = tmp_path / "returns.csv"
     csv_path.write_text(
