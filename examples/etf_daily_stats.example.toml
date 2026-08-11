@@ -21,6 +21,11 @@ outlier_threshold = 2.0   # standard deviations beyond which a return is an outl
 # Identifies this recurring series in the result depot across runs.
 series_key = "etf_daily_stats_example"
 
+# The identity rows are written under, and the one a downstream job selects
+# by. Separate from series_key because rows already in a store cannot be
+# renamed: the label may change, the identity they were saved with may not.
+produced_by = "example:etf_daily_stats"
+
 # Columns of the returns table. "YTD" takes no `days`: it resolves to
 # 31 December of the prior year.
 return_horizons = [
