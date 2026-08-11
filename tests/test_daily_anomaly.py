@@ -32,10 +32,13 @@ from lazystats.daily_anomaly import (
     LIVE_ONLY_STEPS,
     RunContext,
     RunError,
+    SetupError,
     build_live_plan,
     build_shadow_plan,
     is_inside,
     load_input_artifact,
+    prepare_output_dir,
+    run_shadow,
     validate_as_of,
 )
 
@@ -81,12 +84,32 @@ def input_artifact(tmp_path):
 
 
 def context(cfg, input_artifact, out_dir, protected=None):
+    """A context whose protected directories exist.
+
+    They have to: a protected directory that is not there is refused rather
+    than created, since the likeliest reason for its absence is a typo, and a
+    typo there protects nothing while looking exactly like protection.
+    """
+    if protected is None:
+        default = Path(out_dir).parent / "reports"
+        default.mkdir(parents=True, exist_ok=True)
+        protected = [default]
+    dirs = tuple(Path(p) for p in protected)
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
     return RunContext(
         config=cfg,
         input_artifact=input_artifact,
         output_dir=Path(out_dir),
-        protected_dirs=tuple(Path(p) for p in (protected or [out_dir.parent / "reports"])),
+        protected_dirs=dirs,
     )
+
+
+def reports(tmp_path: Path) -> str:
+    """An existing protected directory, for the command-line tests."""
+    p = tmp_path / "reports"
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p)
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess:
@@ -271,14 +294,22 @@ class TestFailClosed:
                 step()
         assert {p for p in tmp_path.rglob("*") if p.is_file()} == before
 
-    def test_a_date_valid_in_shape_but_absurd_still_stays_inside(self, cfg, tmp_path):
-        """The regex admits 9999-99-99; what matters is that it cannot leave
-        the output directory."""
-        artifact = write_input(tmp_path / "input.json", as_of="9999-99-99")
+    @pytest.mark.parametrize("bad", ["2026-02-30", "2026-13-01", "2026-00-10",
+                                     "2026-04-31", "0000-01-01"])
+    def test_a_date_of_the_right_shape_that_names_no_day_is_refused(self, bad):
+        """The pattern alone admits these. They pass every shape test and
+        name nothing, so they are parsed as well as matched."""
+        with pytest.raises(RunError, match="as_of"):
+            validate_as_of(bad)
+
+    def test_a_real_but_distant_date_is_accepted_and_stays_inside(self, cfg, tmp_path):
+        """The check is for well-formedness, not plausibility: a run is not
+        the place to decide which real dates are reasonable."""
+        artifact = write_input(tmp_path / "input.json", as_of="9999-12-31")
         out = tmp_path / "out"
         for _n, step in build_shadow_plan(context(cfg, artifact, out)):
             step()
-        assert [p.name for p in out.iterdir()] == ["anomaly_gate_9999-99-99.json"]
+        assert [p.name for p in out.iterdir()] == ["anomaly_gate_9999-12-31.json"]
 
 
 class TestInputIsValidated:
@@ -336,7 +367,7 @@ class TestCommandLine:
         r = run_cli("--config", str(tmp_path / "absent.toml"),
                     "--input-artifact", str(input_artifact),
                     "--output-dir", str(tmp_path / "out"),
-                    "--protected-dir", str(tmp_path / "reports"))
+                    "--protected-dir", reports(tmp_path))
         assert r.returncode == 2
         assert "CONFIG ERROR" in r.stderr
 
@@ -346,7 +377,7 @@ class TestCommandLine:
         (out / "leftover.txt").write_text("x", encoding="utf-8")
         r = run_cli("--config", str(EXAMPLE), "--input-artifact", str(input_artifact),
                     "--output-dir", str(out),
-                    "--protected-dir", str(tmp_path / "reports"))
+                    "--protected-dir", reports(tmp_path))
         assert r.returncode == 2
         assert "new or empty" in r.stderr
 
@@ -364,7 +395,7 @@ class TestCommandLine:
         other that it could not be carried out."""
         r = run_cli("--config", str(EXAMPLE), "--input-artifact", str(tmp_path / "absent.json"),
                     "--output-dir", str(tmp_path / "out"),
-                    "--protected-dir", str(tmp_path / "reports"))
+                    "--protected-dir", reports(tmp_path))
         assert r.returncode == 1
         assert "RUN ERROR" in r.stderr
 
@@ -372,7 +403,7 @@ class TestCommandLine:
         out = tmp_path / "out"
         r = run_cli("--config", str(EXAMPLE), "--input-artifact", str(input_artifact),
                     "--output-dir", str(out),
-                    "--protected-dir", str(tmp_path / "reports"))
+                    "--protected-dir", reports(tmp_path))
         assert r.returncode == 0, r.stderr
         assert json.loads(r.stdout)["anomaly_count"] == 1
         assert (out / "anomaly_gate_2026-08-10.json").is_file()
@@ -497,3 +528,137 @@ class TestExplanationBatchIsBoundToItsRun:
         body["explanations"][0]["category"] = "invented"
         with pytest.raises(ExplanationError, match="not one of"):
             validate_batch(body, artifact=self.artifact())
+
+
+class TestPreconditionsAreCheckedByTheRunNotTheCaller:
+    """`prepare_output_dir` runs inside `run_shadow`.
+
+    The guarantee has to hold for anyone who runs a shadow plan, not only
+    for callers who remembered to check first — and it must exist in one
+    place, or the two copies are free to drift apart.
+    """
+
+    def ctx(self, cfg, input_artifact, out, protected):
+        return RunContext(config=cfg, input_artifact=input_artifact,
+                          output_dir=Path(out),
+                          protected_dirs=tuple(Path(p) for p in protected))
+
+    def test_a_protected_directory_that_does_not_exist_is_refused(self, cfg,
+                                                                  input_artifact, tmp_path):
+        """Refused, not created. The argument names a tree to stay out of; if
+        it is not there the likeliest reason is a typo, and a typo protects
+        nothing while looking exactly like protection."""
+        ctx = self.ctx(cfg, input_artifact, tmp_path / "out", [tmp_path / "absent"])
+        with pytest.raises(SetupError, match="does not exist"):
+            prepare_output_dir(ctx)
+
+    def test_it_is_not_created_as_a_side_effect(self, cfg, input_artifact, tmp_path):
+        missing = tmp_path / "absent"
+        ctx = self.ctx(cfg, input_artifact, tmp_path / "out", [missing])
+        with pytest.raises(SetupError):
+            prepare_output_dir(ctx)
+        assert not missing.exists()
+
+    def test_a_protected_path_that_is_a_file_is_refused(self, cfg, input_artifact, tmp_path):
+        f = tmp_path / "reports"
+        f.write_text("not a directory", encoding="utf-8")
+        ctx = self.ctx(cfg, input_artifact, tmp_path / "out", [f])
+        with pytest.raises(SetupError, match="not a directory"):
+            prepare_output_dir(ctx)
+
+    def test_an_output_path_that_is_a_file_is_refused(self, cfg, input_artifact, tmp_path):
+        prot = tmp_path / "reports"
+        prot.mkdir()
+        out = tmp_path / "out"
+        out.write_text("not a directory", encoding="utf-8")
+        ctx = self.ctx(cfg, input_artifact, out, [prot])
+        with pytest.raises(SetupError, match="not a directory"):
+            prepare_output_dir(ctx)
+
+    def test_a_non_empty_output_directory_is_refused(self, cfg, input_artifact, tmp_path):
+        prot = tmp_path / "reports"
+        prot.mkdir()
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "leftover.txt").write_text("x", encoding="utf-8")
+        ctx = self.ctx(cfg, input_artifact, out, [prot])
+        with pytest.raises(SetupError, match="new or empty"):
+            prepare_output_dir(ctx)
+
+    def test_run_shadow_refuses_before_reading_anything(self, cfg, tmp_path):
+        """The input does not even exist here: if the preconditions were
+        checked after the plan started, this would fail for the wrong
+        reason."""
+        ctx = self.ctx(cfg, tmp_path / "absent-input.json", tmp_path / "out",
+                       [tmp_path / "absent-protected"])
+        with pytest.raises(SetupError, match="protected"):
+            run_shadow(ctx)
+
+    def test_run_shadow_succeeds_once_the_preconditions_hold(self, cfg, input_artifact,
+                                                             tmp_path):
+        prot = tmp_path / "reports"
+        prot.mkdir()
+        out = tmp_path / "out"
+        result = run_shadow(self.ctx(cfg, input_artifact, out, [prot]))
+        assert result["anomaly_count"] == 1
+        assert (out / "anomaly_gate_2026-08-10.json").is_file()
+
+
+class TestDedupEntriesAreValidated:
+    """The dedup set is matched by exact equality, so a quiet trim or cast
+    here would decide which anomalies get suppressed."""
+
+    def write(self, tmp_path, entry):
+        return write_input(tmp_path / "input.json", already_investigated=[entry])
+
+    @pytest.mark.parametrize("entry,match", [
+        ({"instrument": "ticker:AAA"}, "missing 'date'"),
+        ({"date": "2026-08-10"}, "missing 'instrument'"),
+        ({"instrument": 42, "date": "2026-08-10"}, "non-empty string"),
+        ({"instrument": "", "date": "2026-08-10"}, "non-empty string"),
+        ({"instrument": " ticker:AAA", "date": "2026-08-10"}, "surrounding whitespace"),
+        ({"instrument": "ticker:AAA ", "date": "2026-08-10"}, "surrounding whitespace"),
+        ({"instrument": "ticker:AAA", "date": "2026-02-30"}, "calendar date"),
+        ({"instrument": "ticker:AAA", "date": "../escape"}, "as_of"),
+        ({"instrument": "ticker:AAA", "date": 20260810}, "as_of"),
+    ])
+    def test_a_malformed_entry_is_refused(self, tmp_path, entry, match):
+        with pytest.raises(RunError, match=match):
+            load_input_artifact(self.write(tmp_path, entry))
+
+    def test_a_well_formed_entry_is_accepted_and_suppresses_the_anomaly(self, cfg, tmp_path):
+        """The complement: the validation must not have made dedup unusable."""
+        artifact = self.write(tmp_path, {"instrument": "ticker:AAA", "date": "2026-08-10"})
+        out = tmp_path / "out"
+        prot = tmp_path / "reports"
+        prot.mkdir()
+        result = run_shadow(RunContext(config=cfg, input_artifact=artifact,
+                                       output_dir=out, protected_dirs=(prot,)))
+        assert result["anomaly_count"] == 0
+
+    def test_the_error_names_the_offending_entry(self, tmp_path):
+        body = write_input(tmp_path / "input.json", already_investigated=[
+            {"instrument": "ticker:AAA", "date": "2026-08-10"},
+            {"instrument": "ticker:BBB", "date": "nope"},
+        ])
+        with pytest.raises(RunError, match=r"already_investigated\[1\]"):
+            load_input_artifact(body)
+
+
+class TestTheExplanationEnvelopeIsClosed:
+    def artifact(self):
+        return {"trigger_result_id": "res_example", "targets": []}
+
+    def test_an_extra_envelope_field_is_refused(self):
+        """Same reasoning as the per-item check: an extra key means the model
+        answered a shape nobody asked for, and dropping it quietly hides the
+        drift."""
+        body = {"trigger_result_id": "res_example", "explanations": [],
+                "model_notes": "I did my best"}
+        with pytest.raises(ExplanationError, match="unknown envelope field"):
+            validate_batch(body, artifact=self.artifact())
+
+    def test_the_two_expected_fields_are_accepted(self):
+        batch = validate_batch({"trigger_result_id": "res_example", "explanations": []},
+                               artifact=self.artifact())
+        assert batch.explanations == ()

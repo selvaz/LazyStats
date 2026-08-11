@@ -47,6 +47,9 @@ REQUIRED_FIELDS: dict[str, type | tuple[type, ...]] = {
 #: contract — either way it should be seen, not silently dropped.
 ALLOWED_FIELDS = frozenset(REQUIRED_FIELDS) | {"evidence"}
 
+#: The envelope's fields, exactly. Nothing else may appear.
+BATCH_FIELDS = frozenset({"trigger_result_id", "explanations"})
+
 
 class ExplanationError(ValueError):
     """The explanation does not satisfy the contract."""
@@ -210,6 +213,13 @@ def validate_batch(raw: Any, *, artifact: dict) -> ExplanationBatch:
             f"got {type(raw).__name__}"
         )
 
+    # Closed envelope, same reasoning as the per-item field check: an extra
+    # key means the model answered a shape nobody asked for, and dropping it
+    # silently would hide the drift.
+    unknown = set(raw) - BATCH_FIELDS
+    if unknown:
+        raise ExplanationError(f"unknown envelope field(s) {sorted(unknown)}")
+
     expected_id = artifact["trigger_result_id"]
     got_id = raw.get("trigger_result_id")
     if not isinstance(got_id, str) or not got_id.strip():
@@ -230,6 +240,7 @@ def validate_batch(raw: Any, *, artifact: dict) -> ExplanationBatch:
 
 __all__ = [
     "ALLOWED_FIELDS",
+    "BATCH_FIELDS",
     "CATEGORIES",
     "REQUIRED_FIELDS",
     "Explanation",
