@@ -9,15 +9,18 @@
 #         --config examples/daily_anomaly_gate.example.toml \
 #         --input-artifact captured.json \
 #         --output-dir ./out \
-#         --upstream-series-key example_daily_stats
+#         --protected-dir ./reports
 #
 # There is no default configuration. A gate running silently at someone
 # else's sensitivity either floods the investigation with noise or misses
 # the day that mattered.
 
-# The series this gate reads. Whatever writes it must use the same identity,
-# or the gate finds no input and reports nothing — a failure that looks
-# exactly like a quiet day.
+# The series this gate reads, and the identity its rows carry. Whatever
+# writes them must use both, or the gate finds no input and reports nothing
+# — a failure that looks exactly like a quiet day. They are declared here
+# rather than passed on the command line, so no invocation can point the
+# gate at a series the preset does not name.
+upstream_series_key = "example_daily_stats"
 upstream_produced_by = "scheduled:example_daily_stats"
 
 # Volatility: short-over-long ratio band, plus the minimum fresh

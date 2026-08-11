@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Which movements in a daily statistics run deserve investigating.
 
 A pure function over two consecutive payloads. It opens no database, reads
@@ -85,9 +84,9 @@ def _vol_ratios(payload: dict) -> dict[str, float | None]:
     long_ = payload["volatility_long"]["volatility"]
     out: dict[str, float | None] = {}
     for key, s in short.items():
-        l = long_.get(key)
+        long_entry = long_.get(key)
         s_v = s.get("annualized_volatility") if s else None
-        l_v = l.get("annualized_volatility") if l else None
+        l_v = long_entry.get("annualized_volatility") if long_entry else None
         out[key] = (s_v / l_v) if (s_v is not None and l_v) else None
     return out
 
