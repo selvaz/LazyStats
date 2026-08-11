@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Configuration contract for the daily anomaly gate.
 
 Same separation as the ETF runner: the *method* — how a volatility shift or
@@ -12,12 +11,15 @@ an explicit path. A gate silently running at someone else's sensitivity
 would either flood an investigation with noise or quietly miss the day that
 mattered.
 
-One field is not a threshold and deserves attention.
-``upstream_produced_by`` names the series this gate reads — the output of
-the ETF daily stats job. The two presets are therefore **coupled**: if that
-job's identity changes, this one stops finding its input. Keeping it as an
-explicit, validated field makes the dependency visible instead of leaving it
-buried in a module constant.
+Two fields are not thresholds and deserve attention.
+``upstream_series_key`` and ``upstream_produced_by`` name the series this
+gate reads and the identity its rows carry. The two presets are therefore
+**coupled**: if the producing job's identity changes, this one stops finding
+its input and reports nothing, which is indistinguishable from a quiet day.
+Keeping them as explicit, validated fields makes the dependency visible
+instead of leaving it buried in a module constant — and, because they live
+here rather than on the command line, no invocation can quietly point the
+gate at a different series than the preset declares.
 
 TOML via the standard library's ``tomllib``; no new dependency.
 """
@@ -32,6 +34,10 @@ from pathlib import Path
 class AnomalyGateConfig:
     """What the gate treats as unusual, and where it reads from."""
 
+    #: The series this gate reads, and the identity its rows carry. Both
+    #: come from the preset: a CLI override would let one run disagree with
+    #: the configuration it claims to be running.
+    upstream_series_key: str
     upstream_produced_by: str
 
     # Volatility: the short/long ratio bands, plus the minimum fresh
@@ -64,6 +70,7 @@ class AnomalyGateConfig:
         """The parameter block recorded alongside a result, so a run from
         configuration stays comparable with one from before the extraction."""
         return {
+            "upstream_series_key": self.upstream_series_key,
             "upstream_produced_by": self.upstream_produced_by,
             "vol_ratio_high": self.vol_ratio_high,
             "vol_ratio_low": self.vol_ratio_low,
@@ -89,7 +96,9 @@ def _number(raw: dict, key: str, path: Path) -> float:
     value = raw[key]
     # bool subclasses int; a threshold of `true` must not become 1.0.
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise GateConfigError(f"{path.name}: '{key}' must be a number, got {type(value).__name__}")
+        raise GateConfigError(
+            f"{path.name}: '{key}' must be a number, got {type(value).__name__}"
+        )
     return float(value)
 
 
@@ -98,7 +107,9 @@ def _positive_int(raw: dict, key: str, path: Path) -> int:
         raise GateConfigError(f"{path.name}: missing required key '{key}'")
     value = raw[key]
     if isinstance(value, bool) or not isinstance(value, int):
-        raise GateConfigError(f"{path.name}: '{key}' must be an integer, got {type(value).__name__}")
+        raise GateConfigError(
+            f"{path.name}: '{key}' must be an integer, got {type(value).__name__}"
+        )
     if value <= 0:
         raise GateConfigError(f"{path.name}: '{key}' must be positive, got {value}")
     return value
@@ -133,6 +144,7 @@ def load_gate_config(path: str | Path) -> AnomalyGateConfig:
         raise GateConfigError(f"{p.name}: not valid TOML: {exc}") from exc
 
     cfg = AnomalyGateConfig(
+        upstream_series_key=_text(raw, "upstream_series_key", p),
         upstream_produced_by=_text(raw, "upstream_produced_by", p),
         vol_ratio_high=_number(raw, "vol_ratio_high", p),
         vol_ratio_low=_number(raw, "vol_ratio_low", p),
@@ -161,7 +173,9 @@ def load_gate_config(path: str | Path) -> AnomalyGateConfig:
             f"'corr_high' ({cfg.corr_high}); they bound a band"
         )
     if cfg.vol_ratio_low <= 0:
-        raise GateConfigError(f"{p.name}: 'vol_ratio_low' must be positive, got {cfg.vol_ratio_low}")
+        raise GateConfigError(
+            f"{p.name}: 'vol_ratio_low' must be positive, got {cfg.vol_ratio_low}"
+        )
     for name in ("vol_ratio_delta_min", "corr_delta_min", "beta_z_threshold", "beta_z_delta_min"):
         if getattr(cfg, name) <= 0:
             raise GateConfigError(f"{p.name}: '{name}' must be positive, got {getattr(cfg, name)}")

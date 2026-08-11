@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """What an explanation of an anomaly must look like to be accepted.
 
 The explaining itself is a language model's job; deciding whether what came
@@ -164,11 +163,78 @@ def validate_explanations(raw: Any, *, anomalies: list[dict]) -> tuple[Explanati
     return tuple(by_identity[(a["instrument"], a["date"], a["anomaly_type"])] for a in anomalies)
 
 
+@dataclass(frozen=True)
+class ExplanationBatch:
+    """One model response, bound to the gate result it answers.
+
+    The binding is the point. A batch of explanations is only meaningful
+    against the anomalies of one particular run, and nothing about the
+    explanations themselves says which. Carrying the trigger id in the
+    envelope — and checking it against the artifact — is what stops
+    yesterday's answers being attached to today's gate.
+    """
+
+    trigger_result_id: str
+    explanations: tuple[Explanation, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "trigger_result_id": self.trigger_result_id,
+            "explanations": [e.as_dict() for e in self.explanations],
+        }
+
+
+def validate_batch(raw: Any, *, artifact: dict) -> ExplanationBatch:
+    """Check a model's response against the gate artifact it answers.
+
+    Args:
+        raw: The decoded response — an object carrying ``trigger_result_id``
+            and ``explanations``.
+        artifact: The gate artifact produced by this run, as built by
+            :func:`lazystats.daily_anomaly.gate_step`. Both the anomalies and
+            the expected trigger id are read from it, so the caller cannot
+            state one and pass the other.
+
+    Returns:
+        The validated batch, its explanations in the order the anomalies
+        appear in the artifact.
+
+    Raises:
+        ExplanationError: The envelope is malformed, the trigger id is
+            missing or names a different run, or any explanation fails the
+            per-item contract.
+    """
+    if not isinstance(raw, dict):
+        raise ExplanationError(
+            f"expected an object with 'trigger_result_id' and 'explanations', "
+            f"got {type(raw).__name__}"
+        )
+
+    expected_id = artifact["trigger_result_id"]
+    got_id = raw.get("trigger_result_id")
+    if not isinstance(got_id, str) or not got_id.strip():
+        raise ExplanationError("'trigger_result_id' is missing or not a non-empty string")
+    if got_id != expected_id:
+        raise ExplanationError(
+            f"'trigger_result_id' is {got_id!r}, but this gate result is "
+            f"{expected_id!r}; the explanations answer a different run"
+        )
+
+    if "explanations" not in raw:
+        raise ExplanationError("the response is missing 'explanations'")
+
+    anomalies = [item for target in artifact["targets"] for item in target["items"]]
+    validated = validate_explanations(raw["explanations"], anomalies=anomalies)
+    return ExplanationBatch(trigger_result_id=expected_id, explanations=validated)
+
+
 __all__ = [
     "ALLOWED_FIELDS",
     "CATEGORIES",
     "REQUIRED_FIELDS",
     "Explanation",
+    "ExplanationBatch",
     "ExplanationError",
+    "validate_batch",
     "validate_explanations",
 ]
