@@ -1,66 +1,83 @@
 # -*- coding: utf-8 -*-
 """The refactored gate must select exactly what the legacy one selected.
 
-The legacy implementation is loaded from the preservation ref and driven
-through its own module-level constants, then the pure function is driven
-through the extracted configuration. Anomalies, values and order must match
-exactly — this is the evidence the shadow window will rest on, so an
-approximate match is worthless.
+The legacy gate is executed, not transcribed. It is imported unmodified from
+the production checkout and driven through its own entry point,
+``find_investigation_targets(depot_path=..., explanations_depot_path=...)``,
+against SQLite depots this test builds in a temporary directory. No line of
+its source is rewritten, nothing is monkeypatched, nothing is put on
+sys.path, and none of its logic is restated here — the comparison is between
+two programs, not between a program and someone's reading of it.
 
-The legacy gate reads two depots directly, so it cannot be called on a
-fixture without a database. Rather than build one, the comparison targets
-the layer that actually decides: the same helpers and the same selection
-logic, exercised on identical payloads.
+That the legacy accepts explicit depot paths is what makes this possible.
+The only reason it looked untestable is that production never passed them.
+Nothing here touches the real depot: the paths handed over are temporary
+files, and two tests below check the legacy actually read them.
+
+It runs in a subprocess whose working directory is the production checkout,
+which is how the scheduled task runs it. Its answer comes back as JSON and
+is compared against ``evaluate_gate`` driven on the same payloads with the
+extracted preset. The provenance of what was executed — ref, file digest,
+resolved module path — is asserted alongside the result, so a passing run
+states which legacy it agreed with.
 """
 from __future__ import annotations
 
+import ast
+import hashlib
+import json
 import subprocess
 import sys
-import types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from lazystats.anomaly_gate import evaluate_gate
 from lazystats.anomaly_gate_config import load_gate_config
+from lazystats.io.depot import ResultDepot
 
+#: The production checkout: the working directory the scheduled task uses,
+#: and where the legacy gate still lives.
 LAZYSTATS = Path(r"C:\Users\Administrator\Documents\GitHub\LazyStats")
-PRESET = Path(r"C:\Users\Administrator\Documents\GitHub\investmentcommittee\config\daily_anomaly_gate.toml")
+LEGACY_GATE = LAZYSTATS / "anomaly_gate.py"
+
+#: The private preset, whose values are the legacy module-level constants.
+#: Equivalence only means something against a configuration that reproduces
+#: them; what pins that is ``test_anomaly_preset_equivalence.py`` in the
+#: private repository, not this file.
+PRESET = Path(
+    r"C:\Users\Administrator\Documents\GitHub\investmentcommittee"
+    r"\config\daily_anomaly_gate.toml"
+)
+
+#: The identities the legacy selects rows by. Not choices this test makes:
+#: they are the legacy's own constants, and the fixtures must be written
+#: under them or the legacy finds nothing and "agrees" vacuously.
+PRODUCED_BY = "scheduled:etf_daily_stats"
+EXPLAINER_PRODUCED_BY = "lazystats.anomaly_explainer"
+
+#: Driver for the subprocess. Run with ``-c`` and cwd set to the production
+#: checkout, so ``import anomaly_gate`` resolves the same file the scheduled
+#: task imports — without this test putting anything on sys.path.
+DRIVER = """
+import dataclasses, json, sys
+import anomaly_gate
+targets = anomaly_gate.find_investigation_targets(
+    depot_path=sys.argv[1], explanations_depot_path=sys.argv[2]
+)
+print("MODULE:" + anomaly_gate.__file__)
+print("RESULT:" + json.dumps([dataclasses.asdict(t) for t in targets], sort_keys=True))
+"""
 
 
-@pytest.fixture(scope="module")
-def legacy() -> types.ModuleType:
-    """The legacy gate, loaded from the preservation ref.
-
-    Only the pure part is executed: the module's imports of lazytools and
-    ResultDepot are stripped, because they exist for the database access
-    this comparison deliberately avoids.
-    """
-    src = subprocess.run(
-        ["git", "-C", str(LAZYSTATS), "show",
-         "preserve/lazystats-operational-scripts:anomaly_gate.py"],
-        capture_output=True, text=True, check=True,
-    ).stdout
-    src = src.replace("import lazytools.registry as lazytools_registry", "")
-    src = src.replace("from lazystats.io.depot import ResultDepot", "ResultDepot = object")
-    module = types.ModuleType("legacy_anomaly_gate")
-    # Registered before exec: @dataclass resolves its owner through
-    # sys.modules, and fails on a module that is not there yet.
-    sys.modules["legacy_anomaly_gate"] = module
-    try:
-        exec(compile(src, "<legacy_anomaly_gate>", "exec"), module.__dict__)
-    finally:
-        sys.modules.pop("legacy_anomaly_gate", None)
-    return module
-
-
-@pytest.fixture(scope="module")
-def cfg():
-    return load_gate_config(PRESET)
+def digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def payload(*, as_of="2026-08-10", outliers=(), vol_short=None, vol_long=None,
-            corr=None, returns=None):
+            corr=None, returns=None) -> dict:
+    """One ``etf_daily_stats`` payload, in the shape the ETF job writes."""
     return {
         "as_of": as_of,
         "outliers_last5": {"outliers": list(outliers)},
@@ -71,7 +88,7 @@ def payload(*, as_of="2026-08-10", outliers=(), vol_short=None, vol_long=None,
     }
 
 
-def vol(ann=None, period=None):
+def vol(ann=None, period=None) -> dict:
     out = {}
     if ann is not None:
         out["annualized_volatility"] = ann
@@ -80,228 +97,339 @@ def vol(ann=None, period=None):
     return out
 
 
-class TestHelpersMatchLegacy:
-    """The band and score helpers, driven on the same values."""
+def outlier(instrument, date, z, ret, direction="down") -> dict:
+    return {"instrument": instrument, "date": date, "z_score": z,
+            "log_return": ret, "direction": direction}
 
-    @pytest.mark.parametrize("ratio", [None, 0.4, 0.6666666666666666, 0.67, 1.0, 1.49, 1.5, 3.0])
-    def test_volatility_bands_agree(self, legacy, cfg, ratio):
-        from lazystats.anomaly_gate import _vol_band
-        assert _vol_band(ratio, cfg) == legacy._vol_band(ratio)
 
-    @pytest.mark.parametrize("value", [None, -1.0, 0.0, 0.15, 0.16, 0.5, 0.7, 0.99])
-    def test_correlation_bands_agree(self, legacy, cfg, value):
-        from lazystats.anomaly_gate import _corr_band
-        assert _corr_band(value, cfg) == legacy._corr_band(value)
+def build_depots(tmp_path: Path, *, current: dict, previous: dict,
+                 investigated: list[dict] | None = None) -> tuple[Path, Path, str]:
+    """Two real depots holding the fixtures, written through the real API.
 
-    def test_volatility_ratios_agree(self, legacy):
-        from lazystats.anomaly_gate import _vol_ratios
-        p = payload(
-            vol_short={"ticker:SPY": vol(ann=0.30), "ticker:TLT": vol(ann=0.10),
-                       "ticker:GLD": vol(ann=None)},
-            vol_long={"ticker:SPY": vol(ann=0.20), "ticker:TLT": vol(ann=0.0)},
-        )
-        assert _vol_ratios(p) == legacy._vol_ratios(p)
+    ``previous`` is saved first: the legacy takes the two most recent rows by
+    ``created_at`` and treats the newer as today's, so insertion order is
+    part of the fixture rather than an implementation detail to gloss over.
 
-    def test_beta_z_scores_agree(self, legacy, cfg):
-        from lazystats.anomaly_gate import _beta_z_scores
-        p = payload(
-            vol_short={"ticker:SPY": vol(period=0.02), "ticker:QQQ": vol(period=0.03),
-                       "ticker:GLD": vol(period=0.01)},
-            corr={"ticker:QQQ": {"ticker:SPY": 0.9}, "ticker:GLD": {"ticker:SPY": 0.1}},
+    Returns the two paths and the result_id of the newer row, which is the
+    trigger id the legacy will attach to its targets — read back from the
+    depot rather than guessed, since it is generated on save.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    stats = tmp_path / "stats_depot.sqlite"
+    explanations = tmp_path / "explanations_depot.sqlite"
+
+    depot = ResultDepot(str(stats))
+    try:
+        for body in (previous, current):
+            depot.save(
+                kind="report", produced_by=PRODUCED_BY,
+                instruments=sorted(
+                    {o["instrument"] for o in body["outliers_last5"]["outliers"]}
+                ),
+                payload=body, provenance={"fixture": True},
+                cadence="stable", series_key="etf_daily_stats",
+            )
+        newest = depot.list(produced_by=PRODUCED_BY, cadence="stable", limit=1)[0]
+    finally:
+        depot.close()
+
+    depot = ResultDepot(str(explanations))
+    try:
+        if investigated:
+            depot.save(
+                kind="report", produced_by=EXPLAINER_PRODUCED_BY,
+                instruments=[], payload={"items": investigated},
+                provenance={"fixture": True}, cadence="stable",
+                series_key="anomaly_explanations",
+            )
+    finally:
+        depot.close()
+
+    return stats, explanations, newest["result_id"]
+
+
+def run_legacy(stats: Path, explanations: Path) -> tuple[list[dict], str]:
+    """Execute the unmodified legacy gate; return what it selected and from where."""
+    proc = subprocess.run(
+        [sys.executable, "-c", DRIVER, str(stats), str(explanations)],
+        cwd=str(LAZYSTATS), capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, f"the legacy gate failed:\n{proc.stderr}"
+    fields = {}
+    for line in proc.stdout.splitlines():
+        for tag in ("MODULE:", "RESULT:"):
+            if line.startswith(tag):
+                fields[tag[:-1]] = line[len(tag):]
+    module = fields["MODULE"]
+    assert Path(module).resolve() == LEGACY_GATE.resolve(), (
+        f"the subprocess imported {module}, not the production gate"
+    )
+    return json.loads(fields["RESULT"]), module
+
+
+def canonical(targets) -> list[dict]:
+    """Both sides reduced to one comparable shape.
+
+    Not a re-implementation of either: the legacy's dataclasses arrive via
+    ``dataclasses.asdict`` and the new gate's via its own ``as_dict``. All
+    this does is normalise the items sequence, which one expresses as a list
+    and the other as a tuple.
+    """
+    out = []
+    for t in targets:
+        d = t if isinstance(t, dict) else t.as_dict()
+        out.append({
+            "date": d["date"],
+            "trigger_result_id": d["trigger_result_id"],
+            "items": [
+                {"instrument": i["instrument"], "anomaly_type": i["anomaly_type"],
+                 "date": i["date"], "detail": i["detail"]}
+                for i in d["items"]
+            ],
+        })
+    return out
+
+
+@pytest.fixture(scope="module")
+def cfg():
+    return load_gate_config(PRESET)
+
+
+@pytest.fixture(scope="module")
+def provenance() -> dict:
+    """What was executed, recorded rather than assumed."""
+    ref = subprocess.run(
+        ["git", "-C", str(LAZYSTATS), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    return {"ref": ref, "file": str(LEGACY_GATE), "sha256": digest(LEGACY_GATE),
+            "cwd": str(LAZYSTATS)}
+
+
+#: Every fixture the two implementations are compared on. Each trips a
+#: different branch of the selection; the names are what a failure reports.
+CASES: dict[str, dict] = {
+    "quiet_day": {
+        "current": payload(),
+        "previous": payload(as_of="2026-08-07"),
+    },
+    "return_outlier": {
+        "current": payload(outliers=[outlier("ticker:SPY", "2026-08-10", 3.1, -0.041)]),
+        "previous": payload(as_of="2026-08-07"),
+    },
+    "outlier_on_a_weekend_is_dropped": {
+        "current": payload(outliers=[outlier("ticker:SPY", "2026-08-08", 4.0, -0.05)]),
+        "previous": payload(as_of="2026-08-07"),
+    },
+    "outlier_already_investigated": {
+        "current": payload(outliers=[outlier("ticker:SPY", "2026-08-10", 3.1, -0.041)]),
+        "previous": payload(as_of="2026-08-07"),
+        # Stored without the "ticker:" prefix, which is how the explainer
+        # writes them back — the mismatch that once made dedup never fire.
+        "investigated": [{"anomaly_type": "return_outlier", "instrument": "SPY",
+                          "date": "2026-08-10"}],
+    },
+    "several_outliers_across_two_dates": {
+        "current": payload(outliers=[
+            outlier("ticker:SPY", "2026-08-10", 3.1, -0.041),
+            outlier("ticker:TLT", "2026-08-07", 2.6, 0.03, direction="up"),
+            outlier("ticker:GLD", "2026-08-10", 2.2, -0.02),
+        ]),
+        "previous": payload(as_of="2026-08-07"),
+    },
+    "volatility_above_the_band_with_a_fresh_move": {
+        "current": payload(vol_short={"ticker:QQQ": vol(ann=0.30)},
+                           vol_long={"ticker:QQQ": vol(ann=0.15)}),
+        "previous": payload(as_of="2026-08-07",
+                            vol_short={"ticker:QQQ": vol(ann=0.16)},
+                            vol_long={"ticker:QQQ": vol(ann=0.15)}),
+    },
+    "volatility_parked_in_the_band_without_a_fresh_move": {
+        "current": payload(vol_short={"ticker:QQQ": vol(ann=0.30)},
+                           vol_long={"ticker:QQQ": vol(ann=0.15)}),
+        "previous": payload(as_of="2026-08-07",
+                            vol_short={"ticker:QQQ": vol(ann=0.299)},
+                            vol_long={"ticker:QQQ": vol(ann=0.15)}),
+    },
+    "volatility_below_the_band": {
+        "current": payload(vol_short={"ticker:IEF": vol(ann=0.03)},
+                           vol_long={"ticker:IEF": vol(ann=0.12)}),
+        "previous": payload(as_of="2026-08-07",
+                            vol_short={"ticker:IEF": vol(ann=0.11)},
+                            vol_long={"ticker:IEF": vol(ann=0.12)}),
+    },
+    "correlation_break": {
+        "current": payload(corr={"ticker:SPY": {"ticker:TLT": -0.55}}),
+        "previous": payload(as_of="2026-08-07",
+                            corr={"ticker:SPY": {"ticker:TLT": 0.10}}),
+    },
+    "correlation_pair_reported_once": {
+        "current": payload(corr={"ticker:SPY": {"ticker:TLT": 0.95},
+                                 "ticker:TLT": {"ticker:SPY": 0.95}}),
+        "previous": payload(as_of="2026-08-07",
+                            corr={"ticker:SPY": {"ticker:TLT": 0.30},
+                                  "ticker:TLT": {"ticker:SPY": 0.30}}),
+    },
+    "correlation_cap": {
+        "current": payload(corr={
+            f"ticker:A{i}": {f"ticker:B{i}": 0.99} for i in range(12)
+        }),
+        "previous": payload(as_of="2026-08-07", corr={
+            f"ticker:A{i}": {f"ticker:B{i}": 0.05} for i in range(12)
+        }),
+    },
+    "beta_divergence": {
+        # beta = 0.8 * (0.05 / 0.02) = 2.0; expected = 0.02; residual = -0.08;
+        # residual vol = 0.05 * sqrt(1 - 0.64) = 0.03; z = -2.67, past the
+        # threshold of 2.0, and the prior day's z is 0.
+        "current": payload(
+            vol_short={"ticker:SPY": vol(period=0.02), "ticker:ARKK": vol(period=0.05)},
+            corr={"ticker:ARKK": {"ticker:SPY": 0.8}},
             returns={"ticker:SPY": {"1W": {"return": 0.01}},
-                     "ticker:QQQ": {"1W": {"return": 0.05}},
-                     "ticker:GLD": {"1W": {"return": -0.02}}},
-        )
-        assert _beta_z_scores(p, cfg.beta_benchmark) == legacy._beta_z_scores(p)
-
-
-class TestSelectionMatchesLegacy:
-    """The selection logic itself, on payloads designed to trip each branch."""
-
-    def _legacy_select(self, legacy, current, previous, trigger, already=frozenset()):
-        """Re-run the legacy selection without its database access.
-
-        The legacy function's body is inseparable from its depot reads, so
-        the loop is reproduced here from that source and driven by the
-        legacy module's own constants — the values under comparison.
-        """
-        items = []
-        as_of = current["as_of"]
-        for o in current["outliers_last5"]["outliers"]:
-            if legacy._is_weekend(o["date"]):
-                continue
-            if (o["instrument"], o["date"]) in already:
-                continue
-            items.append(("return_outlier", o["instrument"], o["date"],
-                          o["z_score"], o["log_return"], o["direction"]))
-
-        today_r, prior_r = legacy._vol_ratios(current), legacy._vol_ratios(previous)
-        for instrument, ratio in today_r.items():
-            band = legacy._vol_band(ratio)
-            prior = prior_r.get(instrument)
-            if band is None or band == "normal" or prior is None:
-                continue
-            delta = abs(ratio - prior)
-            if delta >= legacy.VOL_RATIO_DELTA_MIN:
-                items.append(("volatility_shift", instrument, as_of, band, ratio, prior, delta))
-
-        today_c = current["correlation_short"]["correlation"]
-        prior_c = previous["correlation_short"]["correlation"]
-        cands, seen = [], set()
-        for a, row in today_c.items():
-            for b, value in row.items():
-                if a == b or value is None:
-                    continue
-                pair = frozenset((a, b))
-                if pair in seen:
-                    continue
-                seen.add(pair)
-                band = legacy._corr_band(value)
-                prior = prior_c.get(a, {}).get(b)
-                if band is None or band == "mid" or prior is None:
-                    continue
-                delta = abs(value - prior)
-                if delta >= legacy.CORR_DELTA_MIN:
-                    cands.append(("correlation_shift",
-                                  f"{a.replace('ticker:', '')}/{b.replace('ticker:', '')}",
-                                  as_of, band, value, prior, delta))
-        cands.sort(key=lambda it: it[-1], reverse=True)
-        items.extend(cands[:legacy.MAX_CORR_SHIFTS_PER_DAY])
-
-        today_z, prior_z = legacy._beta_z_scores(current), legacy._beta_z_scores(previous)
-        for instrument, z in today_z.items():
-            prior = prior_z.get(instrument)
-            if z is None or prior is None or abs(z) < legacy.BETA_Z_THRESHOLD:
-                continue
-            delta = abs(z - prior)
-            if delta >= legacy.BETA_Z_DELTA_MIN:
-                items.append(("beta_divergence", instrument, as_of,
-                              legacy.BETA_BENCHMARK.replace("ticker:", ""), z, prior, delta))
-        return items
-
-    def _ours(self, targets):
-        out = []
-        for t in targets:
-            for i in t.items:
-                d = i.detail
-                if i.anomaly_type == "return_outlier":
-                    out.append(("return_outlier", i.instrument, i.date,
-                                d["z_score"], d["log_return"], d["direction"]))
-                elif i.anomaly_type == "volatility_shift":
-                    out.append(("volatility_shift", i.instrument, i.date, d["band"],
-                                d["ratio_short_over_long"], d["ratio_prior"], d["ratio_delta"]))
-                elif i.anomaly_type == "correlation_shift":
-                    out.append(("correlation_shift", i.instrument, i.date, d["band"],
-                                d["correlation_short"], d["correlation_prior"],
-                                d["correlation_delta"]))
-                else:
-                    out.append(("beta_divergence", i.instrument, i.date, d["benchmark"],
-                                d["z_score"], d["z_score_prior"], d["z_score_delta"]))
-        return out
-
-    def _both(self, legacy, cfg, current, previous, already=frozenset()):
-        mine = self._ours(evaluate_gate(current=current, previous=previous,
-                                        trigger_result_id="res_x", config=cfg,
-                                        already_investigated=already))
-        theirs = self._legacy_select(legacy, current, previous, "res_x", already)
-        return sorted(mine), sorted(theirs)
-
-    def test_return_outliers_including_weekend_filter(self, legacy, cfg):
-        cur = payload(outliers=[
-            {"instrument": "SPY", "date": "2026-08-10", "z_score": 3.1,
-             "log_return": -0.04, "direction": "down"},
-            {"instrument": "TLT", "date": "2026-08-09", "z_score": 2.5,
-             "log_return": 0.03, "direction": "up"},  # Sunday: filtered
-        ])
-        mine, theirs = self._both(legacy, cfg, cur, payload())
-        assert mine == theirs and len(mine) == 1
-
-    def test_already_investigated_pairs_are_skipped(self, legacy, cfg):
-        cur = payload(outliers=[{"instrument": "SPY", "date": "2026-08-10",
-                                 "z_score": 3.1, "log_return": -0.04, "direction": "down"}])
-        mine, theirs = self._both(legacy, cfg, cur, payload(),
-                                  already=frozenset({("SPY", "2026-08-10")}))
-        assert mine == theirs == []
-
-    def test_volatility_band_and_delta(self, legacy, cfg):
-        cur = payload(vol_short={"ticker:SPY": vol(ann=0.36), "ticker:TLT": vol(ann=0.11)},
-                      vol_long={"ticker:SPY": vol(ann=0.20), "ticker:TLT": vol(ann=0.20)})
-        prev = payload(vol_short={"ticker:SPY": vol(ann=0.26), "ticker:TLT": vol(ann=0.115)},
-                       vol_long={"ticker:SPY": vol(ann=0.20), "ticker:TLT": vol(ann=0.20)})
-        mine, theirs = self._both(legacy, cfg, cur, prev)
-        assert mine == theirs
-        assert any(x[0] == "volatility_shift" for x in mine)
-
-    def test_a_band_without_a_fresh_move_is_not_reported(self, legacy, cfg):
-        """Parked in an elevated band: reported every day would be noise."""
-        same = {"ticker:SPY": vol(ann=0.40)}
-        long_ = {"ticker:SPY": vol(ann=0.20)}
-        mine, theirs = self._both(legacy, cfg,
-                                  payload(vol_short=same, vol_long=long_),
-                                  payload(vol_short=same, vol_long=long_))
-        assert mine == theirs == []
-
-    def test_correlation_pairs_are_deduplicated_and_capped(self, legacy, cfg):
-        names = [f"ticker:X{i}" for i in range(8)]
-        cur_c = {a: {b: 0.95 for b in names if b != a} for a in names}
-        prev_c = {a: {b: 0.1 for b in names if b != a} for a in names}
-        mine, theirs = self._both(legacy, cfg, payload(corr=cur_c), payload(corr=prev_c))
-        assert mine == theirs
-        assert len([x for x in mine if x[0] == "correlation_shift"]) == cfg.max_corr_shifts_per_day
-
-    def test_beta_divergence(self, legacy, cfg):
-        cur = payload(
-            vol_short={"ticker:SPY": vol(period=0.02), "ticker:QQQ": vol(period=0.05)},
-            corr={"ticker:QQQ": {"ticker:SPY": 0.3}},
+                     "ticker:ARKK": {"1W": {"return": -0.06}}},
+        ),
+        "previous": payload(
+            as_of="2026-08-07",
+            vol_short={"ticker:SPY": vol(period=0.02), "ticker:ARKK": vol(period=0.05)},
+            corr={"ticker:ARKK": {"ticker:SPY": 0.8}},
             returns={"ticker:SPY": {"1W": {"return": 0.01}},
-                     "ticker:QQQ": {"1W": {"return": 0.30}}},
+                     "ticker:ARKK": {"1W": {"return": 0.02}}},
+        ),
+    },
+    "everything_at_once": {
+        "current": payload(
+            outliers=[outlier("ticker:SPY", "2026-08-10", 3.1, -0.041)],
+            vol_short={"ticker:QQQ": vol(ann=0.30)}, vol_long={"ticker:QQQ": vol(ann=0.15)},
+            corr={"ticker:SPY": {"ticker:TLT": -0.55}},
+        ),
+        "previous": payload(
+            as_of="2026-08-07",
+            vol_short={"ticker:QQQ": vol(ann=0.16)}, vol_long={"ticker:QQQ": vol(ann=0.15)},
+            corr={"ticker:SPY": {"ticker:TLT": 0.10}},
+        ),
+    },
+}
+
+
+def already_from(case: dict) -> frozenset[tuple[str, str]]:
+    """The dedup set the caller now supplies, in the form the legacy derives
+    internally: stored items carry no ``ticker:`` prefix and the legacy
+    re-adds it before matching."""
+    return frozenset(
+        (i["instrument"] if i["instrument"].startswith("ticker:")
+         else f"ticker:{i['instrument']}", i["date"])
+        for i in case.get("investigated", [])
+        if i["anomaly_type"] == "return_outlier"
+    )
+
+
+class TestEquivalenceAgainstTheExecutedLegacy:
+
+    @pytest.mark.parametrize("name", sorted(CASES))
+    def test_both_gates_select_the_same_targets(self, tmp_path, cfg, name):
+        case = CASES[name]
+        stats, explanations, trigger_id = build_depots(
+            tmp_path, current=case["current"], previous=case["previous"],
+            investigated=case.get("investigated"),
         )
-        prev = payload(
-            vol_short={"ticker:SPY": vol(period=0.02), "ticker:QQQ": vol(period=0.05)},
-            corr={"ticker:QQQ": {"ticker:SPY": 0.3}},
-            returns={"ticker:SPY": {"1W": {"return": 0.01}},
-                     "ticker:QQQ": {"1W": {"return": 0.01}}},
+        legacy_targets, _ = run_legacy(stats, explanations)
+        new_targets = evaluate_gate(
+            current=case["current"], previous=case["previous"],
+            trigger_result_id=trigger_id, config=cfg,
+            already_investigated=already_from(case),
         )
-        mine, theirs = self._both(legacy, cfg, cur, prev)
-        assert mine == theirs
-
-    def test_an_empty_day_produces_nothing(self, legacy, cfg):
-        mine, theirs = self._both(legacy, cfg, payload(), payload())
-        assert mine == theirs == []
+        assert canonical(new_targets) == canonical(legacy_targets)
 
 
-class TestGrouping:
-    def test_targets_are_grouped_by_date_and_ordered(self, cfg):
-        cur = payload(outliers=[
-            {"instrument": "SPY", "date": "2026-08-10", "z_score": 3.0,
-             "log_return": -0.04, "direction": "down"},
-            {"instrument": "TLT", "date": "2026-08-06", "z_score": 2.5,
-             "log_return": 0.03, "direction": "up"},
-        ])
-        targets = evaluate_gate(current=cur, previous=payload(),
-                                trigger_result_id="res_x", config=cfg)
-        assert [t.date for t in targets] == ["2026-08-06", "2026-08-10"]
-        assert all(t.trigger_result_id == "res_x" for t in targets)
+class TestTheComparisonIsNotVacuous:
+    """A comparison where both sides always return nothing would pass."""
+
+    def test_the_loaded_case_really_produces_targets(self, tmp_path, cfg):
+        case = CASES["everything_at_once"]
+        stats, explanations, _ = build_depots(
+            tmp_path, current=case["current"], previous=case["previous"])
+        legacy_targets, _ = run_legacy(stats, explanations)
+        assert legacy_targets, "the legacy selected nothing even on the loaded case"
+        assert sum(len(t["items"]) for t in legacy_targets) >= 3
+
+    def test_each_anomaly_type_is_produced_by_some_case(self, tmp_path, cfg):
+        """Otherwise a whole branch could have been silently dropped in the
+        refactor and every comparison would still match on empty."""
+        produced = set()
+        for name in ("return_outlier", "volatility_above_the_band_with_a_fresh_move",
+                     "correlation_break", "beta_divergence"):
+            case = CASES[name]
+            stats, explanations, _ = build_depots(
+                tmp_path / name, current=case["current"], previous=case["previous"])
+            targets, _ = run_legacy(stats, explanations)
+            produced.update(i["anomaly_type"] for t in targets for i in t["items"])
+        assert produced == {"return_outlier", "volatility_shift",
+                            "correlation_shift", "beta_divergence"}
+
+    def test_the_legacy_read_the_temporary_depot_and_not_the_real_one(self, tmp_path, cfg):
+        """The fixtures use instruments and dates chosen here. Had the legacy
+        fallen back to the production depot it would report something else,
+        or nothing at all."""
+        case = CASES["return_outlier"]
+        stats, explanations, _ = build_depots(
+            tmp_path, current=case["current"], previous=case["previous"])
+        legacy_targets, _ = run_legacy(stats, explanations)
+        assert [t["date"] for t in legacy_targets] == ["2026-08-10"]
+        assert legacy_targets[0]["items"][0]["instrument"] == "ticker:SPY"
+
+    def test_a_different_configuration_makes_the_two_disagree(self, tmp_path, cfg):
+        """If they agreed whatever the thresholds, the equivalence would be
+        measuring nothing. Raising the required fresh move past the fixture's
+        must break the match."""
+        case = CASES["volatility_above_the_band_with_a_fresh_move"]
+        stats, explanations, trigger_id = build_depots(
+            tmp_path, current=case["current"], previous=case["previous"])
+        legacy_targets, _ = run_legacy(stats, explanations)
+        mismatched = evaluate_gate(
+            current=case["current"], previous=case["previous"],
+            trigger_result_id=trigger_id,
+            config=replace(cfg, vol_ratio_delta_min=10.0),
+        )
+        assert legacy_targets
+        assert canonical(mismatched) != canonical(legacy_targets)
 
 
-class TestPurity:
-    def test_the_gate_touches_no_database_or_environment(self):
-        """It must be callable from a shadow run that has neither."""
-        import ast
-        src = Path(__import__("lazystats.anomaly_gate", fromlist=["x"]).__file__)
-        tree = ast.parse(src.read_text(encoding="utf-8"))
-        forbidden = {"sqlite3", "os", "lazytools", "requests"}
-        found = []
-        for node in ast.walk(tree):
+class TestProvenanceOfWhatWasCompared:
+    """A passing equivalence must say which legacy it agreed with."""
+
+    def test_the_legacy_file_is_present_and_identified(self, provenance):
+        assert LEGACY_GATE.is_file()
+        assert len(provenance["sha256"]) == 64
+        assert len(provenance["ref"]) == 40
+
+    def test_the_recorded_digest_is_of_the_file_that_was_imported(self, tmp_path,
+                                                                 cfg, provenance):
+        case = CASES["quiet_day"]
+        stats, explanations, _ = build_depots(
+            tmp_path, current=case["current"], previous=case["previous"])
+        _, module = run_legacy(stats, explanations)
+        assert digest(Path(module)) == provenance["sha256"]
+
+
+class TestPropertiesTheShadowRestsOn:
+
+    def test_the_new_gate_reaches_no_database(self):
+        """Read off the module's imports, not by patching: the shadow plan
+        must not be able to open a store even by accident."""
+        source = (Path(__file__).resolve().parents[1] / "src" / "lazystats"
+                  / "anomaly_gate.py").read_text(encoding="utf-8")
+        imported: set[str] = set()
+        for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.Import):
-                found += [a.name.split(".")[0] for a in node.names]
+                imported.update(a.name.split(".")[0] for a in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
-                found.append(node.module.split(".")[0])
-        assert not (set(found) & forbidden), f"gate imports {set(found) & forbidden}"
+                imported.add(node.module.split(".")[0])
+        assert not (imported & {"sqlite3", "os", "lazytools", "requests", "lazybridge"})
 
-    def test_the_same_inputs_give_the_same_output(self, cfg):
-        cur = payload(outliers=[{"instrument": "SPY", "date": "2026-08-10", "z_score": 3.0,
-                                 "log_return": -0.04, "direction": "down"}])
-        a = evaluate_gate(current=cur, previous=payload(), trigger_result_id="r", config=cfg)
-        b = evaluate_gate(current=cur, previous=payload(), trigger_result_id="r", config=cfg)
-        assert [t.as_dict() for t in a] == [t.as_dict() for t in b]
+    def test_repeated_evaluation_is_deterministic(self, cfg):
+        case = CASES["everything_at_once"]
+        first = evaluate_gate(current=case["current"], previous=case["previous"],
+                              trigger_result_id="res_x", config=cfg)
+        second = evaluate_gate(current=case["current"], previous=case["previous"],
+                               trigger_result_id="res_x", config=cfg)
+        assert canonical(first) == canonical(second)
