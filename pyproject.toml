@@ -57,6 +57,9 @@ packages = ["src/lazystats"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Resolve `lazystats` from this checkout rather than whatever is
+# pip-installed: a worktree must test its own code.
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
