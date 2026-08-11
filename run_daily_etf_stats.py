@@ -314,7 +314,7 @@ def _canonical_row(bundle: dict, cfg: EtfStatsConfig, result_id: str, created_at
     return {
         "result_id": result_id,
         "kind": "report",
-        "produced_by": "scheduled:etf_daily_stats",
+        "produced_by": cfg.produced_by,
         "instruments": bundle["instruments"],
         "payload": {
             "as_of": bundle["as_of"],
@@ -391,7 +391,7 @@ def _make_write_shadow_outputs(cfg: EtfStatsConfig, output_dir: str):
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(row, f, indent=1, sort_keys=True)
 
-        html_path = os.path.join(output_dir, f"shadow_etf_daily_stats_{as_of}.html")
+        html_path = os.path.join(output_dir, f"shadow_{cfg.series_key}_{as_of}.html")
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(render_html(row))
 
@@ -400,15 +400,27 @@ def _make_write_shadow_outputs(cfg: EtfStatsConfig, output_dir: str):
     return write_shadow_outputs
 
 
-def render_report(arg: str) -> dict:
-    """LIVE ONLY. Writes into the production reports directory."""
-    row = json.loads(arg)
-    html = render_html(row)
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-    out_path = os.path.join(REPORTS_DIR, f"etf_daily_stats_{row['payload']['as_of']}_{row['result_id']}.html")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(html)
-    return {"result_id": row["result_id"], "html_path": out_path}
+def _make_render_report(cfg: EtfStatsConfig):
+    """LIVE ONLY. Writes into the production reports directory.
+
+    A closure over the config for the same reason as the other stages: the
+    report filename carries the series name, and a downstream consumer
+    locates yesterday's report by that name rather than by timestamp.
+    """
+
+    def render_report(arg: str) -> dict:
+        row = json.loads(arg)
+        html = render_html(row)
+        os.makedirs(REPORTS_DIR, exist_ok=True)
+        out_path = os.path.join(
+            REPORTS_DIR,
+            f"{cfg.series_key}_{row['payload']['as_of']}_{row['result_id']}.html",
+        )
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        return {"result_id": row["result_id"], "html_path": out_path}
+
+    return render_report
 
 
 def send_telegram(arg: str) -> str:
@@ -461,7 +473,7 @@ def build_live_plan(cfg: EtfStatsConfig) -> Plan:
     return Plan(
         *_make_analysis_steps(cfg),
         Step(_make_save_artifact(cfg), name="save_artifact"),
-        Step(render_report, name="render_report"),
+        Step(_make_render_report(cfg), name="render_report"),
         Step(send_telegram, name="send_telegram"),
     )
 
@@ -540,7 +552,7 @@ def main() -> int:
             return 2
         out = os.path.abspath(args.output_dir)
         plan = build_shadow_plan(cfg, out)
-        name = "etf_daily_stats_shadow"
+        name = f"{cfg.series_key}_shadow"
     else:
         if args.output_dir:
             print(
@@ -550,7 +562,7 @@ def main() -> int:
             )
             return 2
         plan = build_live_plan(cfg)
-        name = "etf_daily_stats"
+        name = cfg.series_key
 
     agent = Agent(engine=plan, name=name)
     env = agent(json.dumps({"as_of": args.as_of}))

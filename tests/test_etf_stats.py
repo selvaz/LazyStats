@@ -24,6 +24,7 @@ outlier_window_days = 5
 outlier_chart_days = 21
 outlier_threshold = 2.0
 series_key = "test_series"
+produced_by = "test:producer"
 return_horizons = [
     { label = "1M", days = 30 },
     { label = "YTD" },
@@ -45,6 +46,7 @@ class TestValidConfig:
         assert cfg.long_weeks == 104
         assert cfg.outlier_threshold == 2.0
         assert cfg.series_key == "test_series"
+        assert cfg.produced_by == "test:producer"
 
     def test_ytd_horizon_carries_no_day_count(self, tmp_path):
         cfg = load_config(write(tmp_path, VALID))
@@ -82,7 +84,7 @@ class TestRefusesToGuess:
         "key",
         ["instruments", "short_weeks", "long_weeks", "one_year_weeks",
          "daily_lookback_days", "outlier_window_days", "outlier_chart_days",
-         "series_key", "return_horizons"],
+         "series_key", "produced_by", "return_horizons"],
     )
     def test_every_required_key_is_required(self, tmp_path, key):
         body = "\n".join(ln for ln in VALID.splitlines() if not ln.startswith(f"{key} ="))
@@ -163,4 +165,8 @@ class TestShippedExample:
         assert cfg.series_key != "etf_daily_stats", (
             "the example must not reuse the live series_key, or an example run "
             "would write into the real series"
+        )
+        assert cfg.produced_by != "scheduled:etf_daily_stats", (
+            "nor the live producer identity: rows written under it would be "
+            "picked up by whatever reads the real series"
         )

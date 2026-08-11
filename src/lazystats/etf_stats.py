@@ -59,6 +59,7 @@ class EtfStatsConfig:
     outlier_chart_days: int
     outlier_threshold: float
     series_key: str
+    produced_by: str
     return_horizons: tuple[ReturnHorizon, ...]
 
     def as_provenance(self) -> dict[str, object]:
@@ -169,6 +170,14 @@ def load_config(path: str | Path) -> EtfStatsConfig:
     if not series_key.strip():
         raise ConfigError(f"{p.name}: 'series_key' must not be blank")
 
+    # Stated, not derived from series_key. Downstream jobs select rows by
+    # this identity, and rows already written under it cannot be renamed —
+    # so it has to be able to differ from the label, and a convention
+    # applied silently here would be a rule nobody could see or override.
+    produced_by = _require(raw, "produced_by", str, p)
+    if not produced_by.strip():
+        raise ConfigError(f"{p.name}: 'produced_by' must not be blank")
+
     horizons_raw = _require(raw, "return_horizons", list, p)
     if not horizons_raw:
         raise ConfigError(f"{p.name}: 'return_horizons' is empty")
@@ -212,6 +221,7 @@ def load_config(path: str | Path) -> EtfStatsConfig:
         outlier_chart_days=windows["outlier_chart_days"],
         outlier_threshold=threshold,
         series_key=series_key,
+        produced_by=produced_by,
         return_horizons=tuple(horizons),
     )
 
