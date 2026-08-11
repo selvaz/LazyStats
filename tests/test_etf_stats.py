@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """The ETF daily-stats configuration contract.
 
 The point of these tests is not that TOML parses — it is that a
@@ -8,6 +7,7 @@ universe.
 """
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -61,7 +61,7 @@ class TestValidConfig:
     def test_config_is_immutable(self, tmp_path):
         """A run must not be able to mutate its own preset halfway through."""
         cfg = load_config(write(tmp_path, VALID))
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             cfg.short_weeks = 99  # type: ignore[misc]
 
     def test_provenance_block_matches_the_fields(self, tmp_path):
@@ -114,7 +114,8 @@ class TestRefusesToGuess:
     def test_boolean_is_not_accepted_as_a_number(self, tmp_path):
         """bool subclasses int in Python; a threshold of `true` must not pass as 1."""
         with pytest.raises(ConfigError):
-            load_config(write(tmp_path, VALID.replace("outlier_threshold = 2.0", "outlier_threshold = true")))
+            load_config(write(tmp_path, VALID.replace(
+                "outlier_threshold = 2.0", "outlier_threshold = true")))
 
     def test_horizon_without_days_is_refused_unless_ytd(self, tmp_path):
         body = VALID.replace('{ label = "1M", days = 30 },', '{ label = "1M" },')

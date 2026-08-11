@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Configuration contract for the ETF daily-stats run.
 
 Separates the *method* — which lives in this public repository — from the
@@ -191,7 +190,9 @@ def load_config(path: str | Path) -> EtfStatsConfig:
             )
         label = entry["label"]
         if not isinstance(label, str) or not label.strip():
-            raise ConfigError(f"{p.name}: horizon 'label' must be a non-empty string, got {label!r}")
+            raise ConfigError(
+                f"{p.name}: horizon 'label' must be a non-empty string, got {label!r}"
+            )
         if label in seen_labels:
             raise ConfigError(f"{p.name}: duplicate horizon label {label!r}")
         seen_labels.add(label)

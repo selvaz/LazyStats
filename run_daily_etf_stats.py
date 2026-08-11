@@ -56,14 +56,14 @@ import os
 import sys
 from datetime import date, timedelta
 
+from etf_stats_report import render_html
 from lazybridge import Agent, Plan, Step
 from market_data_hub.db.connection import get_conn
 
 from lazystats.core.returns import return_correlation, return_outliers, return_volatility
+from lazystats.etf_stats import ConfigError, EtfStatsConfig, load_config
 from lazystats.io.datahub import load_returns
 from lazystats.models import ReturnDataset
-from lazystats.etf_stats import ConfigError, EtfStatsConfig, load_config
-from etf_stats_report import render_html
 
 # The preset -- which instruments, over which windows, above which outlier
 # threshold -- is NOT here. It is a project choice, not a statistical method,
@@ -111,7 +111,8 @@ def _instrument_meta(tickers: list[str]) -> list[dict]:
     try:
         placeholders = ",".join("?" for _ in tickers)
         cls_rows = con.execute(
-            f"SELECT symbol, asset_class, area FROM etf_classification WHERE symbol IN ({placeholders})",
+            "SELECT symbol, asset_class, area FROM etf_classification "
+            f"WHERE symbol IN ({placeholders})",
             tickers,
         ).fetchall()
         name_rows = con.execute(
@@ -124,7 +125,8 @@ def _instrument_meta(tickers: list[str]) -> list[dict]:
         ).fetchall()
     finally:
         con.close()
-    classified = {symbol: {"asset_class": asset_class, "area": area} for symbol, asset_class, area in cls_rows}
+    classified = {symbol: {"asset_class": asset_class, "area": area}
+                  for symbol, asset_class, area in cls_rows}
     names = {symbol: name for symbol, name in name_rows}
     return [
         {
@@ -152,7 +154,8 @@ def _make_analysis_steps(cfg: EtfStatsConfig) -> list:
         params = json.loads(arg)
         as_of = params["as_of"]
         long_start = (date.fromisoformat(as_of) - timedelta(weeks=cfg.long_weeks + 8)).isoformat()
-        daily_start = (date.fromisoformat(as_of) - timedelta(days=cfg.daily_lookback_days)).isoformat()
+        daily_start = (date.fromisoformat(as_of)
+                       - timedelta(days=cfg.daily_lookback_days)).isoformat()
 
         weekly = load_returns(list(cfg.instruments), start=long_start, end=as_of, frequency="W")
         daily = load_returns(list(cfg.instruments), start=daily_start, end=as_of, frequency="D")
@@ -246,7 +249,8 @@ def _make_analysis_steps(cfg: EtfStatsConfig) -> list:
         return bundle
 
 
-    def _cumulative_return(rows: list[dict], instrument: str, as_of: date, since: date) -> float | None:
+    def _cumulative_return(rows: list[dict], instrument: str, as_of: date,
+                           since: date) -> float | None:
         """exp(sum of log returns in (since, as_of]) - 1 -- None if no
         observations fall in the window (e.g. a horizon longer than the
         fetched daily history)."""
@@ -277,7 +281,8 @@ def _make_analysis_steps(cfg: EtfStatsConfig) -> list:
 
         table: dict[str, dict[str, dict[str, float | None]]] = {t: {} for t in daily.instruments}
         for label, days_back in ((h.label, h.days_back) for h in cfg.return_horizons):
-            since = date(as_of.year - 1, 12, 31) if label == "YTD" else as_of - timedelta(days=days_back)
+            since = (date(as_of.year - 1, 12, 31) if label == "YTD"
+                     else as_of - timedelta(days=days_back))
             horizon_days = (as_of - since).days
             for instrument in daily.instruments:
                 ret = _cumulative_return(daily.rows, instrument, as_of, since)
@@ -332,7 +337,8 @@ def _canonical_row(bundle: dict, cfg: EtfStatsConfig, result_id: str, created_at
             "source": "lazystats.io.datahub.load_returns -> market-data-hub",
             "instruments": bundle["instruments"],
             **cfg.as_provenance(),
-            "vol_multiple_formula": "return / (volatility_1y.annualized_volatility * sqrt(horizon_days / 365))",
+            "vol_multiple_formula": ("return / (volatility_1y.annualized_volatility"
+                                     " * sqrt(horizon_days / 365))"),
             "as_of": bundle["as_of"],
         },
         "created_at": created_at,
@@ -350,6 +356,7 @@ def _make_save_artifact(cfg: EtfStatsConfig):
         # into the process. A shadow run should not even be able to reach
         # them by accident, and an import is a reachable path.
         import lazytools.registry as lazytools_registry
+
         from lazystats.io.depot import ResultDepot
 
         bundle = json.loads(arg)
@@ -513,7 +520,8 @@ def main() -> int:
              "outlier threshold, return horizons. Required -- there is no "
              "default preset. See examples/etf_daily_stats.example.toml.",
     )
-    parser.add_argument("--as-of", default=date.today().isoformat(), help="Override the as-of date (YYYY-MM-DD); default: today")
+    parser.add_argument("--as-of", default=date.today().isoformat(),
+                        help="Override the as-of date (YYYY-MM-DD); default: today")
     parser.add_argument(
         "--output-dir",
         default=None,

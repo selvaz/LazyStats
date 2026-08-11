@@ -96,10 +96,17 @@ select = ["E", "F", "I", "UP", "B"]
 # comparison checks. Only the line-length rule is relaxed, and only here —
 # every correctness rule still applies. Same shape as the regimes exemption
 # below: equivalence before style, for a verbatim migration.
+# etf_stats_report.py is the production report renderer moved here
+# unchanged. Its 70 long lines are HTML and format strings; reflowing them
+# would be a large unreviewable diff in the one file whose rendered output a
+# parallel-run comparison is checking byte for byte. Only the line-length
+# rule is relaxed, and only for this file — every correctness rule still
+# applies, and the exemption goes away with the reflow after the cutover.
 [tool.ruff.lint.per-file-ignores]
 "src/lazystats/regimes/**" = ["E", "I", "UP", "B"]
 "tests/regimes/**" = ["E", "I", "UP", "B"]
 "src/lazystats/weekly_review_report.py" = ["E501"]
+"etf_stats_report.py" = ["E501"]
 
 [tool.mypy]
 # No explicit python_version: mypy assumes the interpreter actually running
