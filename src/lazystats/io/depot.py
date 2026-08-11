@@ -26,12 +26,37 @@ from __future__ import annotations
 
 import builtins
 import json
+import os
 import sqlite3
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-__all__ = ["ResultDepot"]
+__all__ = ["ResultDepot", "resolve_result_depot_path"]
+
+
+def resolve_result_depot_path(explicit: str | None = None) -> str | None:
+    """The ONE place that decides which result depot a caller should use.
+
+    Precedence: ``explicit`` arg -> ``LAZYSTATS_RESULT_DEPOT_DB`` env var ->
+    ``None``.
+
+    Returns ``None`` (not a path) when nothing is configured, so a caller
+    decides for itself what "unconfigured" means rather than silently
+    getting an always-empty ``:memory:`` depot.
+
+    This repository owns this database, so this resolution belongs here.
+    Until now every caller reached it through
+    ``lazytools.registry.resolve_db("lazystats_depot")`` — LazyStats' own
+    primary store resolved from another repository, while the *regime*
+    depot next door already had its canonical resolver
+    (:func:`lazystats.regimes.resolve_depot_path`). Scripts may keep using
+    the registry; this is the in-repo contract adapters and library callers
+    resolve against.
+    """
+    if explicit:
+        return explicit
+    return os.environ.get("LAZYSTATS_RESULT_DEPOT_DB") or None
 
 _SCHEMA_VERSION = 2
 
