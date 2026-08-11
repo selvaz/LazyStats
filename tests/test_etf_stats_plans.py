@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """The live and shadow plans, and the CLI guards around them.
 
 The question these tests answer is not "does the flag parse" but "can a
