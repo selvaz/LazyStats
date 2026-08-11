@@ -1,0 +1,47 @@
+# Example configuration for the weekly anomaly review.
+#
+# Fictitious on purpose: the series names, the producers and the universe
+# description below belong to nobody's real deployment. Nothing reads this
+# file unless you pass it explicitly. There is no default configuration — a
+# review running silently against someone else's series would verify
+# explanations nobody wrote and report an empty week that looks exactly like
+# a quiet one.
+
+# The daily explanations this review verifies. Whatever writes them must use
+# the same identity, or the review finds nothing and says so.
+daily_produced_by = "example.daily_explainer"
+daily_series_key = "example_explanations"
+
+# Where this review writes, and reads back from to find where the previous
+# week ended. Must differ from the daily identity above: sharing it would
+# have the review reading its own output as an explanation to verify.
+weekly_produced_by = "example.weekly_review"
+weekly_series_key = "example_weekly_review"
+
+# The statistics job whose freshest snapshot the review checks against.
+upstream_produced_by = "scheduled:example_daily_stats"
+upstream_series_key = "example_daily_stats"
+
+# The first run has no previous review to start from, so a boundary has to
+# be chosen. After that the boundary is the last review's week_end, which is
+# what stops a missed Saturday quietly dropping a week on the floor.
+initial_lookback_days = 7
+
+# A bound on how many rows are read, not a window — the window is the date
+# range. This only stops an unbounded scan of a growing store.
+daily_scan_limit = 200
+
+# How the screened universe is described to the agent, and the threshold the
+# upstream job actually used. Stated rather than recomputed, so the prompt
+# cannot quietly disagree with the numbers it is describing.
+universe_description = "12 example instruments"
+outlier_threshold = 2.5
+
+# The reviewing agent. This section describes an agent the public code never
+# builds: which model reads the week, whether it may reach the open web, and
+# how long it may take are decisions about a deployment, and the caller
+# constructs the agent and passes it in.
+[explainer]
+model = "example-model"
+web = false
+request_timeout_seconds = 300.0
