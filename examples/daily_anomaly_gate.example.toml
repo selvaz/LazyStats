@@ -1,0 +1,47 @@
+# Example gate configuration for run_daily_anomaly.py.
+#
+# Fictitious on purpose: the series names, the producer and the benchmark
+# below belong to nobody's real deployment, and the thresholds are round
+# numbers chosen to be readable rather than to reflect any judgement about a
+# portfolio. Nothing reads this file unless you pass it explicitly:
+#
+#     python run_daily_anomaly.py \
+#         --config examples/daily_anomaly_gate.example.toml \
+#         --input-artifact captured.json \
+#         --output-dir ./out \
+#         --upstream-series-key example_daily_stats
+#
+# There is no default configuration. A gate running silently at someone
+# else's sensitivity either floods the investigation with noise or misses
+# the day that mattered.
+
+# The series this gate reads. Whatever writes it must use the same identity,
+# or the gate finds no input and reports nothing — a failure that looks
+# exactly like a quiet day.
+upstream_produced_by = "scheduled:example_daily_stats"
+
+# Volatility: short-over-long ratio band, plus the minimum fresh
+# day-over-day change required alongside being in the band. Band alone
+# reports an instrument parked in it forever; delta alone reports ordinary
+# movement. Both are needed.
+vol_ratio_high = 2.0
+vol_ratio_low = 0.5
+vol_ratio_delta_min = 0.25
+
+# Correlation: the same band-plus-delta shape. Values live in [-1, 1].
+corr_high = 0.8
+corr_low = 0.1
+corr_delta_min = 0.3
+
+# Hard cap on correlation pairs per day, worst movers first — a safety net
+# against a data glitch producing hundreds of pairs.
+max_corr_shifts_per_day = 5
+
+# Benchmark for the beta divergence check. Which index is the reference is a
+# project choice, not a statistical fact.
+beta_benchmark = "ticker:EXAMPLE"
+beta_z_threshold = 3.0
+beta_z_delta_min = 1.5
+
+# How many past rows to scan when de-duplicating outliers.
+dedup_lookback = 10
