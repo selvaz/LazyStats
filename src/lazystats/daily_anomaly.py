@@ -28,6 +28,7 @@ import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,15 @@ class RunError(RuntimeError):
     """
 
 
+class SetupError(RunError):
+    """The run was asked for wrongly, and nothing has been attempted yet.
+
+    Separate from its parent so a caller can tell "this invocation is
+    malformed" from "the job started and could not finish". Everything
+    refused before the plan is built is one of these.
+    """
+
+
 @dataclass(frozen=True)
 class RunContext:
     """Everything a run needs, stated rather than discovered.
@@ -76,11 +86,23 @@ class RunContext:
 
 
 def validate_as_of(value: Any) -> str:
-    """Accept a plain ISO date, refuse anything that could steer a path."""
+    """Accept a real calendar date in plain ISO form; refuse anything else.
+
+    Two checks, because they catch different things. The pattern refuses
+    whatever could steer a path — a separator, a drive letter, a parent
+    reference, an embedded NUL — before the value is ever joined onto a
+    directory. Parsing then refuses dates that look right and are not:
+    2026-02-30, 2026-13-01 and 2026-00-10 all pass any shape test while
+    naming no day.
+    """
     if not isinstance(value, str) or not _ISO_DATE.match(value):
         raise RunError(
             f"'as_of' must be an ISO date such as 2026-08-10, got {value!r}"
         )
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise RunError(f"'as_of' is not a real calendar date: {value!r} ({exc})") from exc
     return value
 
 
@@ -108,10 +130,49 @@ def assert_outside_protected(path: str | Path, protected: tuple[Path, ...]) -> N
     directory would trust a value the run did not choose.
     """
     if not protected:
-        raise RunError("at least one protected directory must be declared")
+        raise SetupError("at least one protected directory must be declared")
     for prot in protected:
         if is_inside(path, prot):
-            raise RunError(f"{path} is inside the protected directory {prot}")
+            raise SetupError(f"{path} is inside the protected directory {prot}")
+
+
+def prepare_output_dir(ctx: RunContext) -> None:
+    """Check every precondition on where this run may write.
+
+    Called once, from :func:`run_shadow`, before the plan is built — so the
+    guarantee holds for anyone who runs a shadow plan, not only for callers
+    who remembered to check first. The command-line wrapper repeats none of
+    it.
+
+    A protected directory that does not exist is refused rather than
+    created. The argument names a tree to stay out of; if it is absent, the
+    likeliest reason is a typo, and a typo here protects nothing while
+    looking exactly like protection.
+    """
+    if not ctx.protected_dirs:
+        raise SetupError("at least one protected directory must be declared")
+
+    for prot in ctx.protected_dirs:
+        try:
+            if not prot.exists():
+                raise SetupError(f"protected directory does not exist: {prot}")
+            if not prot.is_dir():
+                raise SetupError(f"protected path is not a directory: {prot}")
+        except OSError as exc:
+            raise SetupError(f"protected directory unusable: {prot} ({exc})") from exc
+
+    assert_outside_protected(ctx.output_dir, ctx.protected_dirs)
+
+    try:
+        if ctx.output_dir.exists():
+            if not ctx.output_dir.is_dir():
+                raise SetupError(f"output directory is not a directory: {ctx.output_dir}")
+            if any(ctx.output_dir.iterdir()):
+                raise SetupError(
+                    f"output directory must be new or empty, and {ctx.output_dir} is not"
+                )
+    except OSError as exc:
+        raise SetupError(f"output directory unusable: {ctx.output_dir} ({exc})") from exc
 
 
 def load_input_artifact(path: Path) -> dict:
@@ -167,11 +228,26 @@ def load_input_artifact(path: Path) -> dict:
             f"'already_investigated' must be a list, got {type(investigated).__name__}"
         )
     for i, entry in enumerate(investigated):
-        if not isinstance(entry, dict) or "instrument" not in entry or "date" not in entry:
+        where = f"already_investigated[{i}]"
+        if not isinstance(entry, dict):
+            raise RunError(f"{where} must be an object, got {type(entry).__name__}")
+        for key in ("instrument", "date"):
+            if key not in entry:
+                raise RunError(f"{where} is missing '{key}'")
+        instrument = entry["instrument"]
+        # Not trimmed, not coerced: this set is matched by exact equality, so
+        # " ticker:AAA" quietly becoming "ticker:AAA" would decide which
+        # anomalies get suppressed on the strength of a typo.
+        if (not isinstance(instrument, str) or not instrument
+                or instrument.strip() != instrument):
             raise RunError(
-                f"already_investigated[{i}] must be an object with "
-                f"'instrument' and 'date'"
+                f"{where}: 'instrument' must be a non-empty string without "
+                f"surrounding whitespace, got {instrument!r}"
             )
+        try:
+            validate_as_of(entry["date"])
+        except RunError as exc:
+            raise RunError(f"{where}: {exc}") from exc
     return data
 
 
@@ -270,7 +346,12 @@ def build_live_plan(
 
 
 def run_shadow(ctx: RunContext) -> dict:
-    """Execute the shadow plan and return the last step's result."""
+    """Check the preconditions, then execute the shadow plan.
+
+    The checks are here rather than in the caller so that every route into a
+    shadow run passes through them.
+    """
+    prepare_output_dir(ctx)
     result: dict = {}
     for _name, step in build_shadow_plan(ctx):
         result = step()
@@ -282,6 +363,7 @@ __all__ = [
     "SHADOW_GENERATED_AT",
     "RunContext",
     "RunError",
+    "SetupError",
     "artifact_path",
     "assert_outside_protected",
     "build_live_plan",
@@ -289,6 +371,7 @@ __all__ = [
     "gate_step",
     "is_inside",
     "load_input_artifact",
+    "prepare_output_dir",
     "run_shadow",
     "validate_as_of",
     "write_gate_artifact",

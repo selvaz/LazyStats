@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 from lazystats.anomaly_gate_config import GateConfigError, load_gate_config
-from lazystats.daily_anomaly import RunContext, RunError, assert_outside_protected, run_shadow
+from lazystats.daily_anomaly import RunContext, RunError, SetupError, run_shadow
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,28 +51,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"CONFIG ERROR: {exc}", file=sys.stderr)
         return 2
 
-    out_dir = Path(args.output_dir)
-    protected = tuple(Path(p) for p in args.protected_dirs)
-    try:
-        assert_outside_protected(out_dir, protected)
-    except RunError as exc:
-        print(f"CONFIG ERROR: {exc}", file=sys.stderr)
-        return 2
-
-    if out_dir.exists() and any(out_dir.iterdir()):
-        print(f"CONFIG ERROR: --output-dir must be new or empty, and {out_dir} is not",
-              file=sys.stderr)
-        return 2
-
     ctx = RunContext(
         config=config,
         input_artifact=Path(args.input_artifact),
-        output_dir=out_dir,
-        protected_dirs=protected,
+        output_dir=Path(args.output_dir),
+        protected_dirs=tuple(Path(p) for p in args.protected_dirs),
     )
 
+    # The preconditions on where a run may write are checked by run_shadow,
+    # not here. Repeating them would put the guarantee in two places, free to
+    # drift apart, and would leave any other caller of the plan unprotected.
+    # This only maps the two failures onto different exit codes: a malformed
+    # invocation is not the same as a job that started and could not finish.
     try:
         result = run_shadow(ctx)
+    except SetupError as exc:
+        print(f"CONFIG ERROR: {exc}", file=sys.stderr)
+        return 2
     except RunError as exc:
         print(f"RUN ERROR: {exc}", file=sys.stderr)
         return 1
