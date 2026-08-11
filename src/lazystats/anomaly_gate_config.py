@@ -57,8 +57,8 @@ class AnomalyGateConfig:
     #: the thresholds above.
     max_corr_shifts_per_day: int
 
-    #: Benchmark for the beta divergence check. A project choice: SPY is not
-    #: a universal reference.
+    #: Benchmark for the beta divergence check. Which index is the reference
+    #: is a project choice, not a statistical fact; there is no universal one.
     beta_benchmark: str
     beta_z_threshold: float
     beta_z_delta_min: float
