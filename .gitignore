@@ -7,3 +7,8 @@ __pycache__/
 dist/
 build/
 .venv/
+.coverage
+
+# run_daily_etf_stats.py output -- generated reports/logs, not source
+/reports/
+/logs/
