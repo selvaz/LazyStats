@@ -2,6 +2,6 @@
 (market-data-hub, pandas) is imported lazily inside the function that needs
 it, so ``lazystats`` stays a pure, dependency-free library."""
 
-from lazystats.io.depot import ResultDepot
+from lazystats.io.depot import ResultDepot, resolve_result_depot_path
 
-__all__ = ["ResultDepot"]
+__all__ = ["ResultDepot", "resolve_result_depot_path"]
