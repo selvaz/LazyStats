@@ -57,6 +57,11 @@ packages = ["src/lazystats"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Resolve `lazystats` from this checkout's own src/ rather than from whatever
+# happens to be pip-installed. Without it a worktree silently tests the
+# production install instead of its own code -- declarative, so no test needs
+# to manipulate sys.path.
+pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100

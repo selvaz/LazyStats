@@ -8,14 +8,11 @@ universe.
 """
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from etf_stats_config import ConfigError, load_config  # noqa: E402
+from lazystats.etf_stats import ConfigError, load_config
 
 VALID = """
 instruments = ["SPY", "TLT"]
@@ -125,6 +122,36 @@ class TestRefusesToGuess:
     def test_blank_series_key_is_refused(self, tmp_path):
         with pytest.raises(ConfigError, match="series_key"):
             load_config(write(tmp_path, VALID.replace('"test_series"', '"   "')))
+
+
+class TestRefusesToGuessHorizons:
+    def test_duplicate_horizon_label_is_refused(self, tmp_path):
+        """Two columns with one label would make the report ambiguous."""
+        body = VALID.replace('{ label = "YTD" },', '{ label = "1M", days = 90 },')
+        with pytest.raises(ConfigError, match="duplicate horizon label"):
+            load_config(write(tmp_path, body))
+
+    def test_non_string_horizon_label_is_refused(self, tmp_path):
+        body = VALID.replace('{ label = "1M", days = 30 },', '{ label = 30, days = 30 },')
+        with pytest.raises(ConfigError, match="non-empty string"):
+            load_config(write(tmp_path, body))
+
+    def test_blank_horizon_label_is_refused(self, tmp_path):
+        body = VALID.replace('{ label = "1M", days = 30 },', '{ label = "  ", days = 30 },')
+        with pytest.raises(ConfigError, match="non-empty string"):
+            load_config(write(tmp_path, body))
+
+    def test_ytd_with_days_is_refused_not_ignored(self, tmp_path):
+        """Silently dropping it would make the report disagree with its config."""
+        body = VALID.replace('{ label = "YTD" },', '{ label = "YTD", days = 200 },')
+        with pytest.raises(ConfigError, match="must not carry 'days'"):
+            load_config(write(tmp_path, body))
+
+    def test_untrimmed_instrument_is_refused_not_normalised(self, tmp_path):
+        """Stripping would turn a typo into a silent duplicate of another entry."""
+        body = VALID.replace('["SPY", "TLT"]', '["SPY", " TLT"]')
+        with pytest.raises(ConfigError, match="whitespace"):
+            load_config(write(tmp_path, body))
 
 
 class TestShippedExample:

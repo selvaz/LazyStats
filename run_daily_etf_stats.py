@@ -64,31 +64,20 @@ from lazystats.core.returns import return_correlation, return_outliers, return_v
 from lazystats.io.datahub import load_returns
 from lazystats.io.depot import ResultDepot
 from lazystats.models import ReturnDataset
-from etf_stats_config import ConfigError, EtfStatsConfig, load_config
+from lazystats.etf_stats import ConfigError, EtfStatsConfig, load_config
 from etf_stats_report import render_html
 
 # The preset -- which instruments, over which windows, above which outlier
 # threshold -- is NOT here. It is a project choice, not a statistical method,
 # and it now lives in the caller's own configuration file, passed with
-# --config. See etf_stats_config.py for the contract and
+# --config. See lazystats.etf_stats for the contract and
 # examples/etf_daily_stats.example.toml for the shape.
 #
 # CONFIG is populated once by main() before the plan runs. Deliberately no
 # default: a run against an unstated universe is worse than one that refuses
 # to start.
-CONFIG: EtfStatsConfig | None = None
-
-
-def cfg() -> EtfStatsConfig:
-    """The active configuration, or a clear error if the run was not configured."""
-    if CONFIG is None:
-        raise RuntimeError(
-            "no configuration loaded: run_daily_etf_stats.py requires --config "
-            "<path-to.toml> (there is no default preset)"
-        )
-    return CONFIG
-
-
+#: Where a LIVE run writes its rendered report. A shadow run never uses
+#: this: --dry-run requires an explicit --output-dir and refuses this path.
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
 
 
@@ -152,193 +141,264 @@ def _instrument_meta(tickers: list[str]) -> list[dict]:
     ]
 
 
-def fetch(arg: str) -> dict:
-    params = json.loads(arg)
-    as_of = params["as_of"]
-    long_start = (date.fromisoformat(as_of) - timedelta(weeks=cfg().long_weeks + 8)).isoformat()
-    daily_start = (date.fromisoformat(as_of) - timedelta(days=cfg().daily_lookback_days)).isoformat()
+def _make_analysis_steps(cfg: EtfStatsConfig) -> list:
+    """The pure analysis steps, bound to one configuration.
 
-    weekly = load_returns(list(cfg().instruments), start=long_start, end=as_of, frequency="W")
-    daily = load_returns(list(cfg().instruments), start=daily_start, end=as_of, frequency="D")
+    Closures rather than module globals: the configuration a run used is
+    fixed when the plan is built, so two plans in one process cannot read
+    each other's preset, and no step can be invoked without one.
 
+    Nothing here persists, sends or writes to disk — that is what makes the
+    same steps safe to reuse for both the live and the shadow plan.
+    """
+
+    def fetch(arg: str) -> dict:
+        params = json.loads(arg)
+        as_of = params["as_of"]
+        long_start = (date.fromisoformat(as_of) - timedelta(weeks=cfg.long_weeks + 8)).isoformat()
+        daily_start = (date.fromisoformat(as_of) - timedelta(days=cfg.daily_lookback_days)).isoformat()
+
+        weekly = load_returns(list(cfg.instruments), start=long_start, end=as_of, frequency="W")
+        daily = load_returns(list(cfg.instruments), start=daily_start, end=as_of, frequency="D")
+
+        return {
+            "as_of": as_of,
+            "instruments": weekly.instruments,
+            "instrument_meta": _instrument_meta(list(cfg.instruments)),
+            "weekly": _ds_to_dict(weekly),
+            "daily": _ds_to_dict(daily),
+        }
+
+
+    def volatility_short(arg: str) -> dict:
+        bundle = json.loads(arg)
+        weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg.short_weeks)
+        result = return_volatility(weekly, frequency="W")
+        result["window_weeks"] = len(weekly.rows)
+        bundle["volatility_short"] = result
+        return bundle
+
+
+    def volatility_long(arg: str) -> dict:
+        bundle = json.loads(arg)
+        weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg.long_weeks)
+        result = return_volatility(weekly, frequency="W")
+        result["window_weeks"] = len(weekly.rows)
+        bundle["volatility_long"] = result
+        return bundle
+
+
+    def volatility_1y(arg: str) -> dict:
+        bundle = json.loads(arg)
+        weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg.one_year_weeks)
+        result = return_volatility(weekly, frequency="W")
+        result["window_weeks"] = len(weekly.rows)
+        bundle["volatility_1y"] = result
+        return bundle
+
+
+    def correlation_short(arg: str) -> dict:
+        bundle = json.loads(arg)
+        weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg.short_weeks)
+        result = return_correlation(weekly, frequency="W")
+        result["window_weeks"] = len(weekly.rows)
+        bundle["correlation_short"] = result
+        return bundle
+
+
+    def correlation_long(arg: str) -> dict:
+        bundle = json.loads(arg)
+        weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg.long_weeks)
+        result = return_correlation(weekly, frequency="W")
+        result["window_weeks"] = len(weekly.rows)
+        bundle["correlation_long"] = result
+        return bundle
+
+
+    def outliers_last5(arg: str) -> dict:
+        bundle = json.loads(arg)
+        daily = _ds_from_dict(bundle["daily"])
+        full = return_outliers(daily, frequency="D", threshold=cfg.outlier_threshold)
+
+        # return_outliers is a whole-sample z-score (no lookback window of its
+        # own) -- trim its result to whichever trading-day window each part of
+        # the report needs: the event list stays a tight last-week view, the
+        # frequency chart looks back a full trading month.
+        trading_days = sorted({row["date"] for row in daily.rows})
+        recent_days = trading_days[-cfg.outlier_window_days:]
+        chart_days = trading_days[-cfg.outlier_chart_days:]
+
+        recent_set = set(recent_days)
+        recent_outliers = [o for o in full["outliers"] if o["date"] in recent_set]
+
+        chart_set = set(chart_days)
+        daily_counts = {d: {"positive": 0, "negative": 0} for d in chart_days}
+        for o in full["outliers"]:
+            if o["date"] in chart_set:
+                daily_counts[o["date"]][o["direction"]] += 1
+
+        bundle["outliers_last5"] = {
+            **full,
+            "outliers": recent_outliers,
+            "total_outliers": len(recent_outliers),
+            "window_trading_days": recent_days,
+        }
+        bundle["outlier_daily_counts"] = {
+            "window_trading_days": chart_days,
+            "counts": daily_counts,
+        }
+        return bundle
+
+
+    def _cumulative_return(rows: list[dict], instrument: str, as_of: date, since: date) -> float | None:
+        """exp(sum of log returns in (since, as_of]) - 1 -- None if no
+        observations fall in the window (e.g. a horizon longer than the
+        fetched daily history)."""
+        total = 0.0
+        n = 0
+        for row in rows:
+            d = date.fromisoformat(row["date"])
+            if since < d <= as_of:
+                value = row.get(instrument)
+                if value is not None:
+                    total += value
+                    n += 1
+        return math.exp(total) - 1 if n else None
+
+
+    def returns_table(arg: str) -> dict:
+        """Per instrument, per RETURN_HORIZONS label: the cumulative return
+        plus ``vol_multiple`` = return / (volatility_1y * sqrt(horizon_days
+        / 365)) -- how many "sigma" of the 1Y-annualized volatility, scaled
+        down to that horizon via the square-root-of-time rule, that horizon's
+        actual return represents. Both values are saved explicitly (not left
+        for the report to derive) since this payload is meant to be read
+        directly by an LLM later, not just rendered."""
+        bundle = json.loads(arg)
+        daily = _ds_from_dict(bundle["daily"])
+        as_of = date.fromisoformat(bundle["as_of"])
+        vol_1y = bundle["volatility_1y"]["volatility"]
+
+        table: dict[str, dict[str, dict[str, float | None]]] = {t: {} for t in daily.instruments}
+        for label, days_back in ((h.label, h.days_back) for h in cfg.return_horizons):
+            since = date(as_of.year - 1, 12, 31) if label == "YTD" else as_of - timedelta(days=days_back)
+            horizon_days = (as_of - since).days
+            for instrument in daily.instruments:
+                ret = _cumulative_return(daily.rows, instrument, as_of, since)
+                annualized_vol = vol_1y.get(instrument, {}).get("annualized_volatility")
+                multiple = None
+                if ret is not None and annualized_vol:
+                    horizon_vol = annualized_vol * math.sqrt(horizon_days / 365.0)
+                    multiple = ret / horizon_vol if horizon_vol > 0 else None
+                table[instrument][label] = {"return": ret, "vol_multiple": multiple}
+
+        bundle["returns_table"] = table
+        return bundle
+
+    return [
+        Step(fetch, name="fetch"),
+        Step(volatility_short, name="volatility_short"),
+        Step(volatility_long, name="volatility_long"),
+        Step(volatility_1y, name="volatility_1y"),
+        Step(correlation_short, name="correlation_short"),
+        Step(correlation_long, name="correlation_long"),
+        Step(outliers_last5, name="outliers_last5"),
+        Step(returns_table, name="returns_table"),
+    ]
+
+
+def _canonical_row(bundle: dict, cfg: EtfStatsConfig, result_id: str, created_at: str) -> dict:
+    """The row shape ``ResultDepot.load()`` returns — built without a depot.
+
+    The live path persists and re-loads (so the renderer sees exactly what a
+    later independent re-read would see); the shadow path builds the same
+    shape here. Keeping one constructor means the two paths cannot drift
+    into rendering different structures.
+    """
     return {
-        "as_of": as_of,
-        "instruments": weekly.instruments,
-        "instrument_meta": _instrument_meta(list(cfg().instruments)),
-        "weekly": _ds_to_dict(weekly),
-        "daily": _ds_to_dict(daily),
+        "result_id": result_id,
+        "kind": "report",
+        "produced_by": "scheduled:etf_daily_stats",
+        "instruments": bundle["instruments"],
+        "payload": {
+            "as_of": bundle["as_of"],
+            "instrument_meta": bundle["instrument_meta"],
+            "volatility_short": bundle["volatility_short"],
+            "volatility_long": bundle["volatility_long"],
+            "volatility_1y": bundle["volatility_1y"],
+            "correlation_short": bundle["correlation_short"],
+            "correlation_long": bundle["correlation_long"],
+            "outliers_last5": bundle["outliers_last5"],
+            "outlier_daily_counts": bundle["outlier_daily_counts"],
+            "returns_table": bundle["returns_table"],
+        },
+        "provenance": {
+            "source": "lazystats.io.datahub.load_returns -> market-data-hub",
+            "instruments": bundle["instruments"],
+            **cfg.as_provenance(),
+            "vol_multiple_formula": "return / (volatility_1y.annualized_volatility * sqrt(horizon_days / 365))",
+            "as_of": bundle["as_of"],
+        },
+        "created_at": created_at,
+        "cadence": "stable",
+        "series_key": cfg.series_key,
     }
 
 
-def volatility_short(arg: str) -> dict:
-    bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().short_weeks)
-    result = return_volatility(weekly, frequency="W")
-    result["window_weeks"] = len(weekly.rows)
-    bundle["volatility_short"] = result
-    return bundle
+def _make_save_artifact(cfg: EtfStatsConfig):
+    """LIVE ONLY. Persists to the result depot and re-loads the saved row."""
+
+    def save_artifact(arg: str) -> dict:
+        bundle = json.loads(arg)
+        row_in = _canonical_row(bundle, cfg, result_id="", created_at="")
+        depot_path = lazytools_registry.resolve_db("lazystats_depot")
+        depot = ResultDepot(depot_path)
+        try:
+            result_id = depot.save(
+                kind=row_in["kind"],
+                produced_by=row_in["produced_by"],
+                instruments=row_in["instruments"],
+                payload=row_in["payload"],
+                provenance=row_in["provenance"],
+                cadence="stable",
+                series_key=cfg.series_key,
+            )
+            row = depot.load(result_id)
+        finally:
+            depot.close()
+        return row
+
+    return save_artifact
 
 
-def volatility_long(arg: str) -> dict:
-    bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().long_weeks)
-    result = return_volatility(weekly, frequency="W")
-    result["window_weeks"] = len(weekly.rows)
-    bundle["volatility_long"] = result
-    return bundle
+def _make_write_shadow_outputs(cfg: EtfStatsConfig, output_dir: str):
+    """SHADOW ONLY. Writes the canonical payload and its HTML to an explicit
+    directory. Touches no database and sends nothing: this closure captures
+    neither a depot nor a Telegram client, so there is no code path from
+    here to production state."""
 
+    def write_shadow_outputs(arg: str) -> dict:
+        bundle = json.loads(arg)
+        as_of = bundle["as_of"]
+        result_id = f"shadow_{as_of}"
+        row = _canonical_row(bundle, cfg, result_id=result_id, created_at=SHADOW_CREATED_AT)
 
-def volatility_1y(arg: str) -> dict:
-    bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().one_year_weeks)
-    result = return_volatility(weekly, frequency="W")
-    result["window_weeks"] = len(weekly.rows)
-    bundle["volatility_1y"] = result
-    return bundle
+        os.makedirs(output_dir, exist_ok=True)
+        json_path = os.path.join(output_dir, f"shadow_payload_{as_of}.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(row, f, indent=1, sort_keys=True)
 
+        html_path = os.path.join(output_dir, f"shadow_etf_daily_stats_{as_of}.html")
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(render_html(row))
 
-def correlation_short(arg: str) -> dict:
-    bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().short_weeks)
-    result = return_correlation(weekly, frequency="W")
-    result["window_weeks"] = len(weekly.rows)
-    bundle["correlation_short"] = result
-    return bundle
+        return {"result_id": result_id, "json_path": json_path, "html_path": html_path}
 
-
-def correlation_long(arg: str) -> dict:
-    bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().long_weeks)
-    result = return_correlation(weekly, frequency="W")
-    result["window_weeks"] = len(weekly.rows)
-    bundle["correlation_long"] = result
-    return bundle
-
-
-def outliers_last5(arg: str) -> dict:
-    bundle = json.loads(arg)
-    daily = _ds_from_dict(bundle["daily"])
-    full = return_outliers(daily, frequency="D", threshold=cfg().outlier_threshold)
-
-    # return_outliers is a whole-sample z-score (no lookback window of its
-    # own) -- trim its result to whichever trading-day window each part of
-    # the report needs: the event list stays a tight last-week view, the
-    # frequency chart looks back a full trading month.
-    trading_days = sorted({row["date"] for row in daily.rows})
-    recent_days = trading_days[-cfg().outlier_window_days:]
-    chart_days = trading_days[-cfg().outlier_chart_days:]
-
-    recent_set = set(recent_days)
-    recent_outliers = [o for o in full["outliers"] if o["date"] in recent_set]
-
-    chart_set = set(chart_days)
-    daily_counts = {d: {"positive": 0, "negative": 0} for d in chart_days}
-    for o in full["outliers"]:
-        if o["date"] in chart_set:
-            daily_counts[o["date"]][o["direction"]] += 1
-
-    bundle["outliers_last5"] = {
-        **full,
-        "outliers": recent_outliers,
-        "total_outliers": len(recent_outliers),
-        "window_trading_days": recent_days,
-    }
-    bundle["outlier_daily_counts"] = {
-        "window_trading_days": chart_days,
-        "counts": daily_counts,
-    }
-    return bundle
-
-
-def _cumulative_return(rows: list[dict], instrument: str, as_of: date, since: date) -> float | None:
-    """exp(sum of log returns in (since, as_of]) - 1 -- None if no
-    observations fall in the window (e.g. a horizon longer than the
-    fetched daily history)."""
-    total = 0.0
-    n = 0
-    for row in rows:
-        d = date.fromisoformat(row["date"])
-        if since < d <= as_of:
-            value = row.get(instrument)
-            if value is not None:
-                total += value
-                n += 1
-    return math.exp(total) - 1 if n else None
-
-
-def returns_table(arg: str) -> dict:
-    """Per instrument, per RETURN_HORIZONS label: the cumulative return
-    plus ``vol_multiple`` = return / (volatility_1y * sqrt(horizon_days
-    / 365)) -- how many "sigma" of the 1Y-annualized volatility, scaled
-    down to that horizon via the square-root-of-time rule, that horizon's
-    actual return represents. Both values are saved explicitly (not left
-    for the report to derive) since this payload is meant to be read
-    directly by an LLM later, not just rendered."""
-    bundle = json.loads(arg)
-    daily = _ds_from_dict(bundle["daily"])
-    as_of = date.fromisoformat(bundle["as_of"])
-    vol_1y = bundle["volatility_1y"]["volatility"]
-
-    table: dict[str, dict[str, dict[str, float | None]]] = {t: {} for t in daily.instruments}
-    for label, days_back in ((h.label, h.days_back) for h in cfg().return_horizons):
-        since = date(as_of.year - 1, 12, 31) if label == "YTD" else as_of - timedelta(days=days_back)
-        horizon_days = (as_of - since).days
-        for instrument in daily.instruments:
-            ret = _cumulative_return(daily.rows, instrument, as_of, since)
-            annualized_vol = vol_1y.get(instrument, {}).get("annualized_volatility")
-            multiple = None
-            if ret is not None and annualized_vol:
-                horizon_vol = annualized_vol * math.sqrt(horizon_days / 365.0)
-                multiple = ret / horizon_vol if horizon_vol > 0 else None
-            table[instrument][label] = {"return": ret, "vol_multiple": multiple}
-
-    bundle["returns_table"] = table
-    return bundle
-
-
-def save_artifact(arg: str) -> dict:
-    """Persist the bundle and return the canonical saved row -- the exact
-    shape ``ResultDepot.load()`` returns, and the only input
-    ``etf_stats_report.render_html`` needs. Re-loading (rather than just
-    hand-assembling the dict) guarantees the render step -- and any later,
-    independent re-render from the depot -- see identically-shaped data."""
-    bundle = json.loads(arg)
-    depot_path = lazytools_registry.resolve_db("lazystats_depot")
-    depot = ResultDepot(depot_path)
-    try:
-        result_id = depot.save(
-            kind="report",
-            produced_by="scheduled:etf_daily_stats",
-            instruments=bundle["instruments"],
-            payload={
-                "as_of": bundle["as_of"],
-                "instrument_meta": bundle["instrument_meta"],
-                "volatility_short": bundle["volatility_short"],
-                "volatility_long": bundle["volatility_long"],
-                "volatility_1y": bundle["volatility_1y"],
-                "correlation_short": bundle["correlation_short"],
-                "correlation_long": bundle["correlation_long"],
-                "outliers_last5": bundle["outliers_last5"],
-                "outlier_daily_counts": bundle["outlier_daily_counts"],
-                "returns_table": bundle["returns_table"],
-            },
-            provenance={
-                "source": "lazystats.io.datahub.load_returns -> market-data-hub",
-                "instruments": bundle["instruments"],
-                **cfg().as_provenance(),
-                "vol_multiple_formula": "return / (volatility_1y.annualized_volatility * sqrt(horizon_days / 365))",
-                "as_of": bundle["as_of"],
-            },
-            cadence="stable",
-            series_key=cfg().series_key,
-        )
-        row = depot.load(result_id)
-    finally:
-        depot.close()
-    return row
+    return write_shadow_outputs
 
 
 def render_report(arg: str) -> dict:
+    """LIVE ONLY. Writes into the production reports directory."""
     row = json.loads(arg)
     html = render_html(row)
     os.makedirs(REPORTS_DIR, exist_ok=True)
@@ -370,25 +430,43 @@ def send_telegram(arg: str) -> str:
     return f"Saved result_id={info['result_id']}; report sent to Telegram ({info['html_path']})"
 
 
-def build_plan() -> Plan:
+def build_live_plan(cfg: EtfStatsConfig) -> Plan:
+    """The production plan: analyse, persist to the depot, render into the
+    production reports directory, notify."""
     return Plan(
-        Step(fetch, name="fetch"),
-        Step(volatility_short, name="volatility_short"),
-        Step(volatility_long, name="volatility_long"),
-        Step(volatility_1y, name="volatility_1y"),
-        Step(correlation_short, name="correlation_short"),
-        Step(correlation_long, name="correlation_long"),
-        Step(outliers_last5, name="outliers_last5"),
-        Step(returns_table, name="returns_table"),
-        Step(save_artifact, name="save_artifact"),
+        *_make_analysis_steps(cfg),
+        Step(_make_save_artifact(cfg), name="save_artifact"),
         Step(render_report, name="render_report"),
         Step(send_telegram, name="send_telegram"),
     )
 
 
-def main() -> int:
-    global CONFIG
+def build_shadow_plan(cfg: EtfStatsConfig, output_dir: str) -> Plan:
+    """The shadow plan: the same analysis, then write the canonical payload
+    and its HTML into an explicit directory.
 
+    It does not contain ``save_artifact``, ``render_report`` or
+    ``send_telegram`` — not disabled versions of them, absent. A shadow run
+    therefore has no code path to the result depot, to the production
+    reports directory, or to Telegram, and that is checked by inspecting the
+    plan's step names rather than by trusting a flag.
+    """
+    return Plan(
+        *_make_analysis_steps(cfg),
+        Step(_make_write_shadow_outputs(cfg, output_dir), name="write_shadow_outputs"),
+    )
+
+
+#: Fixed timestamp in shadow rows: a shadow payload is compared byte-for-byte
+#: against another run's, and a wall-clock field would differ every time for
+#: reasons that have nothing to do with the analysis.
+SHADOW_CREATED_AT = "1970-01-01T00:00:00+00:00"
+
+#: Step names that must never appear in a shadow plan.
+_LIVE_ONLY_STEPS = frozenset({"save_artifact", "render_report", "send_telegram"})
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--config",
@@ -416,12 +494,40 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        CONFIG = load_config(args.config)
+        cfg = load_config(args.config)
     except ConfigError as exc:
         print(f"CONFIG ERROR: {exc}", file=sys.stderr)
         return 2
 
-    agent = Agent(engine=build_plan(), name="etf_daily_stats")
+    if args.dry_run:
+        # A shadow run must state where its output goes. Defaulting would
+        # let it land in the production reports directory, which is the one
+        # thing --dry-run exists to prevent.
+        if not args.output_dir:
+            print("CONFIG ERROR: --dry-run requires --output-dir", file=sys.stderr)
+            return 2
+        out = os.path.abspath(args.output_dir)
+        if out == os.path.abspath(REPORTS_DIR):
+            print(
+                f"CONFIG ERROR: --output-dir must not be the production reports "
+                f"directory ({REPORTS_DIR})",
+                file=sys.stderr,
+            )
+            return 2
+        plan = build_shadow_plan(cfg, out)
+        name = "etf_daily_stats_shadow"
+    else:
+        if args.output_dir:
+            print(
+                "CONFIG ERROR: --output-dir applies to --dry-run only; a live "
+                "run writes to the production reports directory",
+                file=sys.stderr,
+            )
+            return 2
+        plan = build_live_plan(cfg)
+        name = "etf_daily_stats"
+
+    agent = Agent(engine=plan, name=name)
     env = agent(json.dumps({"as_of": args.as_of}))
     if env.error is not None:
         print(f"FAILED: {env.error.message}", file=sys.stderr)

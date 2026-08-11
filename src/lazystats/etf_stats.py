@@ -125,6 +125,14 @@ def load_config(path: str | Path) -> EtfStatsConfig:
         raise ConfigError(f"{p.name}: 'instruments' is empty; nothing to analyse")
     if not all(isinstance(s, str) and s.strip() for s in instruments):
         raise ConfigError(f"{p.name}: 'instruments' must be non-empty strings")
+    # Refuse rather than strip: " SPY" and "SPY" would silently become the
+    # same instrument after normalisation, hiding a typo in the preset.
+    untrimmed = [s for s in instruments if s != s.strip()]
+    if untrimmed:
+        raise ConfigError(
+            f"{p.name}: 'instruments' entries must not have leading or trailing "
+            f"whitespace: {untrimmed}"
+        )
     if len(set(instruments)) != len(instruments):
         dupes = sorted({s for s in instruments if instruments.count(s) > 1})
         raise ConfigError(f"{p.name}: 'instruments' contains duplicates: {dupes}")
@@ -165,6 +173,7 @@ def load_config(path: str | Path) -> EtfStatsConfig:
     if not horizons_raw:
         raise ConfigError(f"{p.name}: 'return_horizons' is empty")
     horizons = []
+    seen_labels: set[str] = set()
     for entry in horizons_raw:
         if not isinstance(entry, dict) or "label" not in entry:
             raise ConfigError(
@@ -172,14 +181,26 @@ def load_config(path: str | Path) -> EtfStatsConfig:
                 f"(and 'days' unless the label is '{_YTD}')"
             )
         label = entry["label"]
+        if not isinstance(label, str) or not label.strip():
+            raise ConfigError(f"{p.name}: horizon 'label' must be a non-empty string, got {label!r}")
+        if label in seen_labels:
+            raise ConfigError(f"{p.name}: duplicate horizon label {label!r}")
+        seen_labels.add(label)
         days = entry.get("days")
         if label == _YTD:
-            days = None
+            # Refuse rather than ignore: a 'days' here means the author
+            # expected it to be used, and silently dropping it would make
+            # the report disagree with its own configuration.
+            if days is not None:
+                raise ConfigError(
+                    f"{p.name}: horizon '{_YTD}' must not carry 'days' — it resolves "
+                    f"against 31 December of the prior year, not a day count"
+                )
         elif not isinstance(days, int) or isinstance(days, bool) or days <= 0:
             raise ConfigError(
                 f"{p.name}: horizon '{label}' needs a positive integer 'days'"
             )
-        horizons.append(ReturnHorizon(label=str(label), days_back=days))
+        horizons.append(ReturnHorizon(label=label, days_back=days))
 
     return EtfStatsConfig(
         instruments=tuple(instruments),
