@@ -1,0 +1,30 @@
+# Example configuration for run_daily_etf_stats.py.
+#
+# Deliberately small and generic: it shows the shape, it is not anyone's
+# real universe. Nothing reads this file unless you pass it explicitly:
+#
+#     python run_daily_etf_stats.py --config examples/etf_daily_stats.example.toml
+#
+# There is no default config. A job that runs against an unstated universe
+# is worse than one that refuses to start.
+
+instruments = ["SPY", "TLT", "GLD"]
+
+short_weeks = 13          # short comparison window, in weekly observations
+long_weeks = 104          # long comparison window; must exceed short_weeks
+one_year_weeks = 52       # baseline for the returns table's volatility multiple
+daily_lookback_days = 400 # calendar days of daily history for the outlier baseline
+outlier_window_days = 5   # trading days listed as individual outlier events
+outlier_chart_days = 21   # trading days covered by the outlier-count chart
+outlier_threshold = 2.0   # standard deviations beyond which a return is an outlier
+
+# Identifies this recurring series in the result depot across runs.
+series_key = "etf_daily_stats_example"
+
+# Columns of the returns table. "YTD" takes no `days`: it resolves to
+# 31 December of the prior year.
+return_horizons = [
+    { label = "1M",  days = 30 },
+    { label = "YTD" },
+    { label = "1Y",  days = 365 },
+]
