@@ -64,39 +64,30 @@ from lazystats.core.returns import return_correlation, return_outliers, return_v
 from lazystats.io.datahub import load_returns
 from lazystats.io.depot import ResultDepot
 from lazystats.models import ReturnDataset
+from etf_stats_config import ConfigError, EtfStatsConfig, load_config
 from etf_stats_report import render_html
 
-INSTRUMENTS = [
-    # Equity: US broad/growth/small/value + developed/EM + key single countries
-    "SPY", "QQQ", "IWM", "VTV", "VEA", "VWO", "FXI", "EWJ",
-    # Fixed income: duration spectrum + credit + inflation + EM debt
-    "SHY", "IEF", "TLT", "LQD", "HYG", "TIP", "EMB",
-    # Commodities: precious metals, energy, agriculture
-    "GLD", "USO", "DBA",
-    # Alternatives: volatility (real VIX index, not the VIXY ETF proxy) + crypto
-    "^VIX", "IBIT",
-    # FX + real estate
-    "UUP", "VNQ",
-]
-SHORT_WEEKS = 13  # ~1 quarter
-LONG_WEEKS = 104  # ~2 years
-ONE_YEAR_WEEKS = 52  # baseline for returns_table's vol_multiple -- matches the "1Y" horizon
-DAILY_LOOKBACK_DAYS = 400  # calendar days of daily history fetched for the outlier baseline
-OUTLIER_WINDOW_DAYS = 5  # trading days shown as individual events
-OUTLIER_CHART_DAYS = 21  # ~1 trading month, for the daily outlier-count chart
-OUTLIER_THRESHOLD = 2.0
-SERIES_KEY = "etf_daily_stats"
+# The preset -- which instruments, over which windows, above which outlier
+# threshold -- is NOT here. It is a project choice, not a statistical method,
+# and it now lives in the caller's own configuration file, passed with
+# --config. See etf_stats_config.py for the contract and
+# examples/etf_daily_stats.example.toml for the shape.
+#
+# CONFIG is populated once by main() before the plan runs. Deliberately no
+# default: a run against an unstated universe is worse than one that refuses
+# to start.
+CONFIG: EtfStatsConfig | None = None
 
-# (label, calendar days back from as_of) -- "YTD" is special-cased to
-# since=Dec 31 of the prior year rather than a fixed day count.
-RETURN_HORIZONS = [
-    ("1W", 7),
-    ("1M", 30),
-    ("3M", 91),
-    ("6M", 182),
-    ("YTD", None),
-    ("1Y", 365),
-]
+
+def cfg() -> EtfStatsConfig:
+    """The active configuration, or a clear error if the run was not configured."""
+    if CONFIG is None:
+        raise RuntimeError(
+            "no configuration loaded: run_daily_etf_stats.py requires --config "
+            "<path-to.toml> (there is no default preset)"
+        )
+    return CONFIG
+
 
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
 
@@ -164,16 +155,16 @@ def _instrument_meta(tickers: list[str]) -> list[dict]:
 def fetch(arg: str) -> dict:
     params = json.loads(arg)
     as_of = params["as_of"]
-    long_start = (date.fromisoformat(as_of) - timedelta(weeks=LONG_WEEKS + 8)).isoformat()
-    daily_start = (date.fromisoformat(as_of) - timedelta(days=DAILY_LOOKBACK_DAYS)).isoformat()
+    long_start = (date.fromisoformat(as_of) - timedelta(weeks=cfg().long_weeks + 8)).isoformat()
+    daily_start = (date.fromisoformat(as_of) - timedelta(days=cfg().daily_lookback_days)).isoformat()
 
-    weekly = load_returns(INSTRUMENTS, start=long_start, end=as_of, frequency="W")
-    daily = load_returns(INSTRUMENTS, start=daily_start, end=as_of, frequency="D")
+    weekly = load_returns(list(cfg().instruments), start=long_start, end=as_of, frequency="W")
+    daily = load_returns(list(cfg().instruments), start=daily_start, end=as_of, frequency="D")
 
     return {
         "as_of": as_of,
         "instruments": weekly.instruments,
-        "instrument_meta": _instrument_meta(INSTRUMENTS),
+        "instrument_meta": _instrument_meta(list(cfg().instruments)),
         "weekly": _ds_to_dict(weekly),
         "daily": _ds_to_dict(daily),
     }
@@ -181,7 +172,7 @@ def fetch(arg: str) -> dict:
 
 def volatility_short(arg: str) -> dict:
     bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), SHORT_WEEKS)
+    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().short_weeks)
     result = return_volatility(weekly, frequency="W")
     result["window_weeks"] = len(weekly.rows)
     bundle["volatility_short"] = result
@@ -190,7 +181,7 @@ def volatility_short(arg: str) -> dict:
 
 def volatility_long(arg: str) -> dict:
     bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), LONG_WEEKS)
+    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().long_weeks)
     result = return_volatility(weekly, frequency="W")
     result["window_weeks"] = len(weekly.rows)
     bundle["volatility_long"] = result
@@ -199,7 +190,7 @@ def volatility_long(arg: str) -> dict:
 
 def volatility_1y(arg: str) -> dict:
     bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), ONE_YEAR_WEEKS)
+    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().one_year_weeks)
     result = return_volatility(weekly, frequency="W")
     result["window_weeks"] = len(weekly.rows)
     bundle["volatility_1y"] = result
@@ -208,7 +199,7 @@ def volatility_1y(arg: str) -> dict:
 
 def correlation_short(arg: str) -> dict:
     bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), SHORT_WEEKS)
+    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().short_weeks)
     result = return_correlation(weekly, frequency="W")
     result["window_weeks"] = len(weekly.rows)
     bundle["correlation_short"] = result
@@ -217,7 +208,7 @@ def correlation_short(arg: str) -> dict:
 
 def correlation_long(arg: str) -> dict:
     bundle = json.loads(arg)
-    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), LONG_WEEKS)
+    weekly = _slice_last(_ds_from_dict(bundle["weekly"]), cfg().long_weeks)
     result = return_correlation(weekly, frequency="W")
     result["window_weeks"] = len(weekly.rows)
     bundle["correlation_long"] = result
@@ -227,15 +218,15 @@ def correlation_long(arg: str) -> dict:
 def outliers_last5(arg: str) -> dict:
     bundle = json.loads(arg)
     daily = _ds_from_dict(bundle["daily"])
-    full = return_outliers(daily, frequency="D", threshold=OUTLIER_THRESHOLD)
+    full = return_outliers(daily, frequency="D", threshold=cfg().outlier_threshold)
 
     # return_outliers is a whole-sample z-score (no lookback window of its
     # own) -- trim its result to whichever trading-day window each part of
     # the report needs: the event list stays a tight last-week view, the
     # frequency chart looks back a full trading month.
     trading_days = sorted({row["date"] for row in daily.rows})
-    recent_days = trading_days[-OUTLIER_WINDOW_DAYS:]
-    chart_days = trading_days[-OUTLIER_CHART_DAYS:]
+    recent_days = trading_days[-cfg().outlier_window_days:]
+    chart_days = trading_days[-cfg().outlier_chart_days:]
 
     recent_set = set(recent_days)
     recent_outliers = [o for o in full["outliers"] if o["date"] in recent_set]
@@ -289,7 +280,7 @@ def returns_table(arg: str) -> dict:
     vol_1y = bundle["volatility_1y"]["volatility"]
 
     table: dict[str, dict[str, dict[str, float | None]]] = {t: {} for t in daily.instruments}
-    for label, days_back in RETURN_HORIZONS:
+    for label, days_back in ((h.label, h.days_back) for h in cfg().return_horizons):
         since = date(as_of.year - 1, 12, 31) if label == "YTD" else as_of - timedelta(days=days_back)
         horizon_days = (as_of - since).days
         for instrument in daily.instruments:
@@ -334,19 +325,12 @@ def save_artifact(arg: str) -> dict:
             provenance={
                 "source": "lazystats.io.datahub.load_returns -> market-data-hub",
                 "instruments": bundle["instruments"],
-                "short_window_weeks": SHORT_WEEKS,
-                "long_window_weeks": LONG_WEEKS,
-                "one_year_window_weeks": ONE_YEAR_WEEKS,
-                "daily_lookback_days": DAILY_LOOKBACK_DAYS,
-                "outlier_window_days": OUTLIER_WINDOW_DAYS,
-                "outlier_chart_days": OUTLIER_CHART_DAYS,
-                "outlier_threshold": OUTLIER_THRESHOLD,
-                "return_horizons": [label for label, _ in RETURN_HORIZONS],
+                **cfg().as_provenance(),
                 "vol_multiple_formula": "return / (volatility_1y.annualized_volatility * sqrt(horizon_days / 365))",
                 "as_of": bundle["as_of"],
             },
             cadence="stable",
-            series_key=SERIES_KEY,
+            series_key=cfg().series_key,
         )
         row = depot.load(result_id)
     finally:
@@ -403,9 +387,39 @@ def build_plan() -> Plan:
 
 
 def main() -> int:
+    global CONFIG
+
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        required=True,
+        metavar="PATH",
+        help="Path to the run configuration (TOML): instruments, windows, "
+             "outlier threshold, return horizons. Required -- there is no "
+             "default preset. See examples/etf_daily_stats.example.toml.",
+    )
     parser.add_argument("--as-of", default=date.today().isoformat(), help="Override the as-of date (YYYY-MM-DD); default: today")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="PATH",
+        help="Write the rendered report here instead of ./reports -- lets a "
+             "shadow run keep its output away from the live one.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Compute and render, but do not persist to the result depot or "
+             "send anything. For comparing a candidate configuration against "
+             "the live run without touching either.",
+    )
     args = parser.parse_args()
+
+    try:
+        CONFIG = load_config(args.config)
+    except ConfigError as exc:
+        print(f"CONFIG ERROR: {exc}", file=sys.stderr)
+        return 2
 
     agent = Agent(engine=build_plan(), name="etf_daily_stats")
     env = agent(json.dumps({"as_of": args.as_of}))
