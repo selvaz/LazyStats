@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from pathlib import Path
 
 from lazydataspace import Health, SourceInfo
 
@@ -43,6 +44,23 @@ CAPABILITIES = (
 #: Presence of this table distinguishes "a readable SQLite file" from
 #: "actually this repository's result depot".
 _SENTINEL_TABLE = "analysis_results"
+
+# Columns ResultDepot reads and writes directly. A same-named table from an
+# unrelated or damaged database is not a usable depot and must not pass the
+# readiness gate merely because its name matches.
+_REQUIRED_RESULT_COLUMNS = frozenset(
+    {
+        "result_id",
+        "kind",
+        "produced_by",
+        "instruments",
+        "payload",
+        "provenance",
+        "created_at",
+        "cadence",
+        "series_key",
+    }
+)
 
 
 class StatsSource:
@@ -124,12 +142,23 @@ class StatsSource:
             )
 
         try:
-            con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            # as_uri() percent-encodes URI metacharacters in a filesystem
+            # path. Interpolating a raw path would let ?, # or % change the
+            # filename/query and could make this supposedly read-only probe
+            # create or inspect a sibling file.
+            uri = f"{Path(path).resolve().as_uri()}?mode=ro"
+            con = sqlite3.connect(uri, uri=True)
             try:
                 row = con.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                     (_SENTINEL_TABLE,),
                 ).fetchone()
+                columns = {
+                    column[1]
+                    for column in con.execute(
+                        f"PRAGMA table_info({_SENTINEL_TABLE})"
+                    ).fetchall()
+                }
             finally:
                 con.close()
         except Exception as exc:
@@ -140,6 +169,12 @@ class StatsSource:
             return Health(
                 ready=False,
                 detail=f"database is readable but has no {_SENTINEL_TABLE} table (wrong file?)",
+            )
+        missing = _REQUIRED_RESULT_COLUMNS - columns
+        if missing:
+            return Health(
+                ready=False,
+                detail="analysis_results table is missing required columns (wrong schema?)",
             )
         return Health(ready=True)
 

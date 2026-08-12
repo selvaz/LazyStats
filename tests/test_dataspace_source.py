@@ -119,6 +119,32 @@ class TestHealth:
         assert health.ready is False
         assert "analysis_results" in health.detail
 
+    def test_unready_when_the_sentinel_table_has_the_wrong_schema(self, tmp_path):
+        malformed = tmp_path / "malformed.db"
+        con = sqlite3.connect(str(malformed))
+        con.execute("CREATE TABLE analysis_results (x TEXT)")
+        con.commit()
+        con.close()
+
+        health = StatsSource(str(malformed)).health()
+
+        assert health.ready is False
+        assert "required columns" in health.detail
+
+    def test_uri_metacharacters_do_not_redirect_or_create_a_sibling(self, tmp_path):
+        # `%23` is a valid filename fragment on Windows and POSIX, but in an
+        # unescaped SQLite URI it decodes to `#` and names a different file.
+        intended = tmp_path / "depot%23.db"
+        sibling = tmp_path / "depot#.db"
+        depot = ResultDepot(str(intended))
+        depot.close()
+
+        health = StatsSource(str(intended)).health()
+
+        assert health.ready is True
+        assert intended.exists()
+        assert not sibling.exists()
+
     def test_failure_detail_never_contains_the_path(self, tmp_path):
         junk = tmp_path / "secret-location.db"
         junk.write_text("junk", encoding="utf-8")
