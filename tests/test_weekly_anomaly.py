@@ -82,9 +82,11 @@ def explanation_row(result_id, day, items, produced_by="example.daily_explainer"
 
 
 def item(instrument="ticker:AAA", day="2026-08-10", anomaly_type="return_outlier",
-         category="macro_data", confidence="high", explanation="A data release."):
+         category="macro_data", confidence="high", explanation="A data release.",
+         source_result_id="res_a"):
     return {"instrument": instrument, "anomaly_type": anomaly_type, "date": day,
-            "category": category, "confidence": confidence, "explanation": explanation}
+            "category": category, "confidence": confidence, "explanation": explanation,
+            "source_result_id": source_result_id}
 
 
 def stats_row(as_of="2026-08-14", outliers=(),
@@ -231,8 +233,17 @@ class TestTheLayoutTheAgentSees:
 
     def test_items_are_numbered_from_one(self):
         block = format_daily_block([item(), item(instrument="ticker:BBB")])
-        assert block.startswith("1. ticker:AAA")
-        assert "\n2. ticker:BBB" in block
+        assert block.startswith("1. [res_a] ticker:AAA")
+        assert "\n2. [res_a] ticker:BBB" in block
+
+    def test_every_item_shows_the_source_id_the_verdict_must_copy(self):
+        """The prompt tells the agent to copy this id; if the block does not
+        show it, the instruction points at nothing."""
+        block = format_daily_block([item(source_result_id="res_one"),
+                                    item(instrument="ticker:BBB",
+                                         source_result_id="res_two")])
+        assert "[res_one]" in block
+        assert "[res_two]" in block
 
     def test_outliers_lose_the_prefix_and_keep_two_decimals(self):
         assert format_outliers_block({"outliers": [outlier(z=3.256)]}) == (
@@ -274,6 +285,7 @@ class TestTheAnswerIsInjectedNotBuilt:
 
         answer = WeeklyReview(
             verifications=[VerificationVerdict(
+                source_result_id="res_a",
                 instrument="ticker:AAA",
                 anomaly_type="return_outlier",
                 date="2026-08-10",
@@ -294,6 +306,58 @@ class TestTheAnswerIsInjectedNotBuilt:
         assert review(week, cfg, agent=agent) is answer
         assert seen["prompt"] == build_prompt(week, cfg)
 
+    def _answer(self, verifications):
+        from lazystats.weekly_anomaly import WeeklyReview, WeeklySynthesis
+
+        return WeeklyReview(
+            verifications=verifications,
+            synthesis=WeeklySynthesis(narrative="q", new_trends=[],
+                                      regime_confirmations=[], new_risks=[]))
+
+    def _two_reruns(self):
+        """The same instrument, reason and day, flagged by two different runs.
+
+        Nothing but the source id distinguishes them -- which is the point:
+        before it was part of the key, one verdict could answer both and the
+        other explanation would go unverified without anything saying so.
+        """
+        return [item(source_result_id="res_first", explanation="First run's read."),
+                item(source_result_id="res_second", explanation="Second run's read.")]
+
+    def _verdict(self, source_result_id):
+        from lazystats.weekly_anomaly import VerificationVerdict
+
+        return VerificationVerdict(
+            source_result_id=source_result_id, instrument="ticker:AAA",
+            anomaly_type="return_outlier", date="2026-08-10",
+            original_category="macro_data", verdict="confirmed", note="Checked.")
+
+    def test_two_verdicts_on_one_source_leave_the_other_rerun_unanswered(self, cfg):
+        from lazystats.weekly_anomaly import review
+
+        week = {"daily_items": self._two_reruns(), "latest_as_of": "2026-08-14",
+                "latest_outliers": None}
+        answer = self._answer([self._verdict("res_first"), self._verdict("res_first")])
+        with pytest.raises(RuntimeError, match="one-to-one"):
+            review(week, cfg, agent=lambda prompt: self.FakeEnvelope(payload=answer))
+
+    def test_one_verdict_per_source_is_accepted(self, cfg):
+        from lazystats.weekly_anomaly import review
+
+        week = {"daily_items": self._two_reruns(), "latest_as_of": "2026-08-14",
+                "latest_outliers": None}
+        answer = self._answer([self._verdict("res_first"), self._verdict("res_second")])
+        assert review(week, cfg, agent=lambda prompt: self.FakeEnvelope(payload=answer)) is answer
+
+    def test_a_verdict_naming_a_source_that_was_not_flagged_is_refused(self, cfg):
+        from lazystats.weekly_anomaly import review
+
+        week = {"daily_items": self._two_reruns(), "latest_as_of": "2026-08-14",
+                "latest_outliers": None}
+        answer = self._answer([self._verdict("res_first"), self._verdict("res_invented")])
+        with pytest.raises(RuntimeError, match="one-to-one"):
+            review(week, cfg, agent=lambda prompt: self.FakeEnvelope(payload=answer))
+
     @pytest.mark.parametrize("mode", ["missing", "duplicate", "invented"])
     def test_verifications_must_match_daily_items_one_to_one(self, cfg, mode):
         from lazystats.weekly_anomaly import (
@@ -303,6 +367,7 @@ class TestTheAnswerIsInjectedNotBuilt:
         )
 
         valid = VerificationVerdict(
+            source_result_id="res_a",
             instrument="ticker:AAA",
             anomaly_type="return_outlier",
             date="2026-08-10",
