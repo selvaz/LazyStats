@@ -72,8 +72,9 @@ packages = ["src/lazystats"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Resolve `lazystats` from this checkout rather than whatever is
-# pip-installed: a worktree must test its own code.
+# A developer may have another LazyStats worktree installed editable. Tests
+# must exercise this checkout, not whichever checkout the environment points
+# at. Keep this declarative; individual tests must not rewrite sys.path.
 pythonpath = ["src"]
 
 [tool.ruff]
