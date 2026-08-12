@@ -93,9 +93,9 @@ class Depot(Protocol):
     """
 
     def list(self, *, produced_by: str | None = ..., cadence: str | None = ...,
-             limit: int = ...) -> list[dict]: ...
+             limit: int = ...) -> list[dict[str, Any]]: ...
 
-    def load(self, result_id: str) -> dict | None: ...
+    def load(self, result_id: str) -> dict[str, Any] | None: ...
 
 
 def last_week_end(depot: Depot, config: WeeklyReviewConfig) -> str | None:
@@ -113,7 +113,7 @@ def last_week_end(depot: Depot, config: WeeklyReviewConfig) -> str | None:
 
 
 def gather_week(*, explanations_depot: Depot, stats_depot: Depot,
-                config: WeeklyReviewConfig, today: date | None = None) -> dict:
+                config: WeeklyReviewConfig, today: date | None = None) -> dict[str, Any]:
     """Every explanation since the last review, plus the freshest snapshot.
 
     Args:
@@ -134,7 +134,7 @@ def gather_week(*, explanations_depot: Depot, stats_depot: Depot,
         today - timedelta(days=config.initial_lookback_days)
     ).isoformat()
 
-    daily_items: list[dict] = []
+    daily_items: list[dict[str, Any]] = []
     for entry in explanations_depot.list(produced_by=config.daily_produced_by,
                                          cadence="stable",
                                          limit=config.daily_scan_limit):
@@ -159,7 +159,7 @@ def gather_week(*, explanations_depot: Depot, stats_depot: Depot,
     }
 
 
-def format_daily_block(items: list[dict]) -> str:
+def format_daily_block(items: list[dict[str, Any]]) -> str:
     parts = []
     for i, it in enumerate(items, start=1):
         ticker = it["instrument"]
@@ -171,7 +171,7 @@ def format_daily_block(items: list[dict]) -> str:
     return "\n".join(parts) if parts else "(none)"
 
 
-def format_outliers_block(outliers_payload: dict | None) -> str:
+def format_outliers_block(outliers_payload: dict[str, Any] | None) -> str:
     if not outliers_payload or not outliers_payload.get("outliers"):
         return "(no outliers)"
     lines = []
@@ -181,7 +181,7 @@ def format_outliers_block(outliers_payload: dict | None) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(week: dict, config: WeeklyReviewConfig) -> str:
+def build_prompt(week: dict[str, Any], config: WeeklyReviewConfig) -> str:
     """The exact text the agent would be given.
 
     Separated from sending it, because the prompt is deterministic and the
@@ -198,7 +198,8 @@ def build_prompt(week: dict, config: WeeklyReviewConfig) -> str:
     )
 
 
-def review(week: dict, config: WeeklyReviewConfig, *, agent) -> WeeklyReview:
+def review(week: dict[str, Any], config: WeeklyReviewConfig, *,
+           agent: Any) -> WeeklyReview:
     """Ask an already-built agent the week's two questions.
 
     The agent is injected. This module constructs no engine, opens no
@@ -212,10 +213,11 @@ def review(week: dict, config: WeeklyReviewConfig, *, agent) -> WeeklyReview:
     envelope = agent(build_prompt(week, config))
     if not envelope.ok:
         raise RuntimeError(f"the weekly review agent failed: {envelope.error}")
-    return envelope.payload
+    payload: WeeklyReview = envelope.payload
+    return payload
 
 
-def review_payload(week: dict, result: WeeklyReview) -> dict:
+def review_payload(week: dict[str, Any], result: WeeklyReview) -> dict[str, Any]:
     """The row body, built without a depot.
 
     One constructor, so a live run and a shadow run cannot drift into
@@ -230,14 +232,14 @@ def review_payload(week: dict, result: WeeklyReview) -> dict:
     }
 
 
-def reviewed_instruments(week: dict) -> list[str]:
+def reviewed_instruments(week: dict[str, Any]) -> list[str]:
     return sorted({it["instrument"].replace("ticker:", "") for it in week["daily_items"]})
 
 
-def save_review(week: dict, result: WeeklyReview, *, depot: Any,
+def save_review(week: dict[str, Any], result: WeeklyReview, *, depot: Any,
                 config: WeeklyReviewConfig) -> str:
     """Persist one review through a depot the caller opened."""
-    return depot.save(
+    result_id: str = depot.save(
         kind="weekly_anomaly_review",
         produced_by=config.weekly_produced_by,
         instruments=reviewed_instruments(week),
@@ -253,6 +255,7 @@ def save_review(week: dict, result: WeeklyReview, *, depot: Any,
         cadence="stable",
         series_key=config.weekly_series_key,
     )
+    return result_id
 
 
 __all__ = [

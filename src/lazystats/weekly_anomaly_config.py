@@ -27,6 +27,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,7 @@ class WeeklyConfigError(ValueError):
     """The configuration is missing, malformed or incoherent."""
 
 
-def _text(raw: dict, key: str, path: Path) -> str:
+def _text(raw: dict[str, Any], key: str, path: Path) -> str:
     if key not in raw:
         raise WeeklyConfigError(f"{path.name}: missing required key '{key}'")
     value = raw[key]
@@ -102,7 +103,7 @@ def _text(raw: dict, key: str, path: Path) -> str:
     return value
 
 
-def _positive_int(raw: dict, key: str, path: Path) -> int:
+def _positive_int(raw: dict[str, Any], key: str, path: Path) -> int:
     if key not in raw:
         raise WeeklyConfigError(f"{path.name}: missing required key '{key}'")
     value = raw[key]
@@ -115,7 +116,7 @@ def _positive_int(raw: dict, key: str, path: Path) -> int:
     return value
 
 
-def _number(raw: dict, key: str, path: Path) -> float:
+def _number(raw: dict[str, Any], key: str, path: Path) -> float:
     if key not in raw:
         raise WeeklyConfigError(f"{path.name}: missing required key '{key}'")
     value = raw[key]

@@ -6,6 +6,7 @@ report. Same contract/palette as ``anomaly_report.render_html`` and
 from __future__ import annotations
 
 import json
+from typing import Any
 
 __all__ = ["render_html"]
 
@@ -149,7 +150,7 @@ document.getElementById("footer").innerHTML = `
 """
 
 
-def render_html(row: dict) -> str:
+def render_html(row: dict[str, Any]) -> str:
     """Render ``row`` (the dict shape :meth:`ResultDepot.load` returns) as a
     self-contained HTML report. Pure function -- no I/O."""
     return _TEMPLATE.replace("__ROW_JSON__", json.dumps(row))
