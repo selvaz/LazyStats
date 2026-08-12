@@ -78,7 +78,7 @@ def _corr_band(value: float | None, cfg: AnomalyGateConfig) -> str | None:
     return "mid"
 
 
-def _vol_ratios(payload: dict) -> dict[str, float | None]:
+def _vol_ratios(payload: dict[str, Any]) -> dict[str, float | None]:
     """Short-window volatility over long-window, per instrument."""
     short = payload["volatility_short"]["volatility"]
     long_ = payload["volatility_long"]["volatility"]
@@ -91,7 +91,7 @@ def _vol_ratios(payload: dict) -> dict[str, float | None]:
     return out
 
 
-def _beta_z_scores(payload: dict, benchmark: str) -> dict[str, float | None]:
+def _beta_z_scores(payload: dict[str, Any], benchmark: str) -> dict[str, float | None]:
     """How many idiosyncratic sigmas each instrument's weekly return diverges
     from what its beta to ``benchmark`` predicts.
 
@@ -130,8 +130,8 @@ def _beta_z_scores(payload: dict, benchmark: str) -> dict[str, float | None]:
 
 def evaluate_gate(
     *,
-    current: dict,
-    previous: dict,
+    current: dict[str, Any],
+    previous: dict[str, Any],
     trigger_result_id: str,
     config: AnomalyGateConfig,
     already_investigated: frozenset[tuple[str, str]] = frozenset(),
@@ -174,7 +174,7 @@ def evaluate_gate(
     for instrument, ratio in today_ratios.items():
         band = _vol_band(ratio, config)
         prior = prior_ratios.get(instrument)
-        if band is None or band == "normal" or prior is None:
+        if ratio is None or band is None or band == "normal" or prior is None:
             continue
         delta = abs(ratio - prior)
         if delta >= config.vol_ratio_delta_min:

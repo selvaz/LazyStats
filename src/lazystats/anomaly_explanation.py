@@ -126,7 +126,8 @@ def _validate_one(raw: Any, *, expected: set[tuple[str, str, str]], index: int) 
     )
 
 
-def validate_explanations(raw: Any, *, anomalies: list[dict]) -> tuple[Explanation, ...]:
+def validate_explanations(raw: Any, *, anomalies: list[dict[str, Any]],
+                          ) -> tuple[Explanation, ...]:
     """Check a model's response against the anomalies it was asked about.
 
     Args:
@@ -187,7 +188,7 @@ class ExplanationBatch:
         }
 
 
-def validate_batch(raw: Any, *, artifact: dict) -> ExplanationBatch:
+def validate_batch(raw: Any, *, artifact: dict[str, Any]) -> ExplanationBatch:
     """Check a model's response against the gate artifact it answers.
 
     Args:
