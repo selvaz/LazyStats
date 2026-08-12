@@ -37,7 +37,15 @@ regression = [
     "statsmodels>=0.14",
     "scikit-learn>=1.1",
 ]
-test = ["lazystats[regimes]", "lazystats[regression]", "pytest>=8.2", "pytest-cov>=5.0"]
+# lazystats.weekly_anomaly — the review's three contracts are pydantic models,
+# so validating an agent's structured output is the model itself rather than a
+# hand-written checker that would drift from it. Optional like the two above:
+# nothing else imports pydantic, `import lazystats` never pulls it, and the
+# core stays dependency-free.
+review = ["pydantic>=2"]
+
+test = ["lazystats[regimes]", "lazystats[regression]", "lazystats[review]",
+        "pytest>=8.2", "pytest-cov>=5.0"]
 dev = ["lazystats[test]", "ruff>=0.6", "mypy>=1.10"]
 # Ecosystem contract tests (stabilization plan, ECO-010 / Train B PR B3):
 # validates lazystats.models.ReturnDataset against market-data-hub's
@@ -72,9 +80,16 @@ select = ["E", "F", "I", "UP", "B"]
 # regimes/ (and its ported tests) is LazyHMM migrated verbatim — equivalence
 # before style (plan v3.1). Only correctness rules run there; the full rule
 # set applies once the follow-up cleanup lands.
+# weekly_review_report.py is the production renderer moved here unchanged.
+# Its long lines are HTML and JavaScript inside a template string; reflowing
+# them would be an unreviewable diff in the one file whose rendered output a
+# comparison checks. Only the line-length rule is relaxed, and only here —
+# every correctness rule still applies. Same shape as the regimes exemption
+# below: equivalence before style, for a verbatim migration.
 [tool.ruff.lint.per-file-ignores]
 "src/lazystats/regimes/**" = ["E", "I", "UP", "B"]
 "tests/regimes/**" = ["E", "I", "UP", "B"]
+"src/lazystats/weekly_review_report.py" = ["E501"]
 
 [tool.mypy]
 # No explicit python_version: mypy assumes the interpreter actually running
