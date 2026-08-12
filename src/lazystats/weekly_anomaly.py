@@ -42,7 +42,11 @@ Return outliers, |z| >= {threshold}, last 5 trading days:
 
 Do two things:
 
-1. VERIFY each daily explanation above. For each one, decide:
+1. VERIFY each daily explanation above. Each one is prefixed with its source
+   id in square brackets: copy that id into the verdict's source_result_id
+   exactly as written. It is what says which explanation a verdict answers --
+   two runs can flag the same instrument for the same reason on the same day,
+   and only the id tells them apart. For each one, decide:
    - "confirmed": the cited cause still holds up and is consistent with
      what you know now.
    - "questionable": something about it looks weak, contradicted, or you
@@ -66,6 +70,13 @@ Do two things:
 
 
 class VerificationVerdict(BaseModel):
+    #: Which daily row this verdict answers. The four descriptive fields below
+    #: do not identify one: the same instrument can be flagged for the same
+    #: reason on the same day by two different runs, with different
+    #: explanations, and two verdicts would then both appear to answer either.
+    #: The source row's id is the durable name for "this explanation", and
+    #: every gathered item already carries it.
+    source_result_id: str
     instrument: str
     anomaly_type: str
     date: str
@@ -173,8 +184,8 @@ def format_daily_block(items: list[dict[str, Any]]) -> str:
     for i, it in enumerate(items, start=1):
         ticker = it["instrument"]
         parts.append(
-            f"{i}. {ticker} -- {it['anomaly_type']} on {it['date']} "
-            f"[{it['category']}, {it['confidence']} confidence]\n"
+            f"{i}. [{it['source_result_id']}] {ticker} -- {it['anomaly_type']} "
+            f"on {it['date']} [{it['category']}, {it['confidence']} confidence]\n"
             f"   {it['explanation']}"
         )
     return "\n".join(parts) if parts else "(none)"
@@ -224,11 +235,12 @@ def review(week: dict[str, Any], config: WeeklyReviewConfig, *,
         raise RuntimeError(f"the weekly review agent failed: {envelope.error}")
     payload: WeeklyReview = envelope.payload
     expected = Counter(
-        (item["instrument"], item["anomaly_type"], item["date"], item["category"])
+        (item["source_result_id"], item["instrument"], item["anomaly_type"],
+         item["date"], item["category"])
         for item in week["daily_items"]
     )
     actual = Counter(
-        (v.instrument, v.anomaly_type, v.date, v.original_category)
+        (v.source_result_id, v.instrument, v.anomaly_type, v.date, v.original_category)
         for v in payload.verifications
     )
     if actual != expected:
