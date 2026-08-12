@@ -23,6 +23,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 #: Horizon labels the report knows how to render. "YTD" is special-cased to
 #: "since 31 December of the prior year" rather than a fixed day count, so it
@@ -88,7 +89,7 @@ class ConfigError(ValueError):
     """
 
 
-def _require(raw: dict, key: str, kind: type, path: Path):
+def _require(raw: dict[str, Any], key: str, kind: type, path: Path) -> Any:
     if key not in raw:
         raise ConfigError(f"{path.name}: missing required key '{key}'")
     value = raw[key]
