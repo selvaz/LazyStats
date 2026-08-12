@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +101,10 @@ def _number(raw: dict[str, Any], key: str, path: Path) -> float:
         raise GateConfigError(
             f"{path.name}: '{key}' must be a number, got {type(value).__name__}"
         )
-    return float(value)
+    number = float(value)
+    if not isfinite(number):
+        raise GateConfigError(f"{path.name}: '{key}' must be finite, got {value}")
+    return number
 
 
 def _positive_int(raw: dict[str, Any], key: str, path: Path) -> int:

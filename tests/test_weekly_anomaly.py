@@ -51,10 +51,11 @@ class FakeDepot:
         self.rows = rows or []
         self.saved: list[dict] = []
 
-    def list(self, *, produced_by=None, cadence=None, limit=50):
+    def list(self, *, produced_by=None, cadence=None, series_key=None, limit=50):
         out = [r for r in self.rows
                if (produced_by is None or r["produced_by"] == produced_by)
-               and (cadence is None or r.get("cadence") == cadence)]
+               and (cadence is None or r.get("cadence") == cadence)
+               and (series_key is None or r.get("series_key") == series_key)]
         return [{"result_id": r["result_id"]} for r in out[:limit]]
 
     def load(self, result_id):
@@ -73,8 +74,10 @@ def cfg():
     return load_weekly_config(EXAMPLE)
 
 
-def explanation_row(result_id, day, items, produced_by="example.daily_explainer"):
+def explanation_row(result_id, day, items, produced_by="example.daily_explainer",
+                    series_key="example_explanations"):
     return {"result_id": result_id, "produced_by": produced_by, "cadence": "stable",
+            "series_key": series_key,
             "payload": {"date": day, "items": items}}
 
 
@@ -84,8 +87,11 @@ def item(instrument="ticker:AAA", day="2026-08-10", anomaly_type="return_outlier
             "category": category, "confidence": confidence, "explanation": explanation}
 
 
-def stats_row(as_of="2026-08-14", outliers=(), produced_by="scheduled:example_daily_stats"):
+def stats_row(as_of="2026-08-14", outliers=(),
+              produced_by="scheduled:example_daily_stats",
+              series_key="example_daily_stats"):
     return {"result_id": "res_stats", "produced_by": produced_by, "cadence": "stable",
+            "series_key": series_key,
             "payload": {"as_of": as_of,
                         "outliers_last5": {"outliers": list(outliers)}}}
 
@@ -107,7 +113,8 @@ class TestWhereTheWeekStarts:
         a missed Saturday quietly dropping a week of explanations."""
         depot = FakeDepot([
             {"result_id": "res_last", "produced_by": "example.weekly_review",
-             "cadence": "stable", "payload": {"week_end": "2026-07-25"}},
+             "cadence": "stable", "series_key": "example_weekly_review",
+             "payload": {"week_end": "2026-07-25"}},
         ])
         week = gather_week(explanations_depot=depot, stats_depot=FakeDepot(),
                            config=cfg, today=date(2026, 8, 15))
@@ -116,7 +123,8 @@ class TestWhereTheWeekStarts:
     def test_a_review_row_that_cannot_be_loaded_falls_back(self, cfg):
         depot = FakeDepot()
         depot.rows = [{"result_id": "res_ghost", "produced_by": "example.weekly_review",
-                       "cadence": "stable", "payload": {"week_end": "x"}}]
+                       "cadence": "stable", "series_key": "example_weekly_review",
+                       "payload": {"week_end": "x"}}]
         depot.load = lambda _rid: None  # the index knows it, the store does not
         assert last_week_end(depot, cfg) is None
 
@@ -125,7 +133,8 @@ class TestWhereTheWeekStarts:
         and has already been reviewed. Including it would double-count."""
         depot = FakeDepot([
             {"result_id": "res_last", "produced_by": "example.weekly_review",
-             "cadence": "stable", "payload": {"week_end": "2026-08-08"}},
+             "cadence": "stable", "series_key": "example_weekly_review",
+             "payload": {"week_end": "2026-08-08"}},
             explanation_row("res_a", "2026-08-08", [item(day="2026-08-08")]),
             explanation_row("res_b", "2026-08-09", [item(day="2026-08-09")]),
         ])
@@ -150,6 +159,25 @@ class TestWhatTheWeekContains:
                            config=cfg, today=date(2026, 8, 15))
         assert week["daily_items"] == []
 
+    def test_rows_from_another_daily_series_are_ignored_before_the_limit(self, cfg):
+        depot = FakeDepot([
+            explanation_row("res_wrong", "2026-08-13", [item()],
+                            series_key="another_series"),
+            explanation_row("res_right", "2026-08-12", [item()]),
+        ])
+        tight = WeeklyReviewConfig(**{**vars(cfg), "daily_scan_limit": 1})
+        week = gather_week(explanations_depot=depot, stats_depot=FakeDepot(),
+                           config=tight, today=date(2026, 8, 15))
+        assert [i["source_result_id"] for i in week["daily_items"]] == ["res_right"]
+
+    def test_rows_from_another_weekly_series_do_not_set_the_boundary(self, cfg):
+        depot = FakeDepot([
+            {"result_id": "res_wrong", "produced_by": cfg.weekly_produced_by,
+             "cadence": "stable", "series_key": "another_series",
+             "payload": {"week_end": "2026-08-14"}},
+        ])
+        assert last_week_end(depot, cfg) is None
+
     def test_the_scan_limit_bounds_the_read(self, cfg):
         rows = [explanation_row(f"res_{i}", "2026-08-12", [item()]) for i in range(10)]
         tight = WeeklyReviewConfig(**{**vars(cfg), "daily_scan_limit": 3})
@@ -164,6 +192,15 @@ class TestWhatTheWeekContains:
         assert week["week_end"] == "2026-08-14"
         assert week["latest_as_of"] == "2026-08-14"
         assert week["latest_outliers"]["outliers"][0]["instrument"] == "ticker:AAA"
+
+    def test_rows_from_another_stats_series_are_ignored_before_the_limit(self, cfg):
+        stats = FakeDepot([
+            stats_row(as_of="2026-08-15", series_key="another_series"),
+            {**stats_row(as_of="2026-08-14"), "result_id": "res_right"},
+        ])
+        week = gather_week(explanations_depot=FakeDepot(), stats_depot=stats,
+                           config=cfg, today=date(2026, 8, 15))
+        assert week["latest_as_of"] == "2026-08-14"
 
     def test_without_a_snapshot_the_week_ends_today(self, cfg):
         """Stated rather than silently absent: the review still has a week,
@@ -229,10 +266,21 @@ class TestTheAnswerIsInjectedNotBuilt:
             self.ok = error is None
 
     def test_the_agent_receives_the_prompt_and_its_answer_is_returned(self, cfg):
-        from lazystats.weekly_anomaly import WeeklyReview, WeeklySynthesis
+        from lazystats.weekly_anomaly import (
+            VerificationVerdict,
+            WeeklyReview,
+            WeeklySynthesis,
+        )
 
         answer = WeeklyReview(
-            verifications=[],
+            verifications=[VerificationVerdict(
+                instrument="ticker:AAA",
+                anomaly_type="return_outlier",
+                date="2026-08-10",
+                original_category="macro_data",
+                verdict="confirmed",
+                note="Still consistent.",
+            )],
             synthesis=WeeklySynthesis(narrative="Quiet.", new_trends=[],
                                       regime_confirmations=[], new_risks=[]))
         seen = {}
@@ -245,6 +293,42 @@ class TestTheAnswerIsInjectedNotBuilt:
                 "latest_outliers": None}
         assert review(week, cfg, agent=agent) is answer
         assert seen["prompt"] == build_prompt(week, cfg)
+
+    @pytest.mark.parametrize("mode", ["missing", "duplicate", "invented"])
+    def test_verifications_must_match_daily_items_one_to_one(self, cfg, mode):
+        from lazystats.weekly_anomaly import (
+            VerificationVerdict,
+            WeeklyReview,
+            WeeklySynthesis,
+        )
+
+        valid = VerificationVerdict(
+            instrument="ticker:AAA",
+            anomaly_type="return_outlier",
+            date="2026-08-10",
+            original_category="macro_data",
+            verdict="confirmed",
+            note="Checked.",
+        )
+        if mode == "missing":
+            verifications = []
+        elif mode == "duplicate":
+            verifications = [valid, valid]
+        else:
+            verifications = [valid.model_copy(update={"instrument": "ticker:BBB"})]
+        answer = WeeklyReview(
+            verifications=verifications,
+            synthesis=WeeklySynthesis(narrative="Quiet.", new_trends=[],
+                                      regime_confirmations=[], new_risks=[]),
+        )
+
+        def agent(_prompt):
+            return self.FakeEnvelope(payload=answer)
+
+        week = {"daily_items": [item()], "latest_as_of": "2026-08-14",
+                "latest_outliers": None}
+        with pytest.raises(RuntimeError, match="one-to-one"):
+            review(week, cfg, agent=agent)
 
     def test_a_failed_agent_raises_rather_than_returning_nothing(self, cfg):
         def agent(_prompt):

@@ -29,8 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Gate configuration (TOML). Required: there is no default "
                          "preset, and it declares the upstream series.")
     ap.add_argument("--input-artifact", required=True, metavar="PATH",
-                    help="Captured input: current and previous payloads plus the "
-                         "trigger id.")
+                    help="Captured input: identity, consecutive current/previous "
+                         "payloads, and trigger id.")
     ap.add_argument("--output-dir", required=True, metavar="PATH",
                     help="Isolated directory for the gate artifact. Must be new or "
                          "empty.")

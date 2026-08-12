@@ -220,7 +220,7 @@ def load_input_artifact(path: Path) -> dict[str, Any]:
 
     if "as_of" not in data["current"]:
         raise RunError("input artifact's 'current' payload is missing 'as_of'")
-    validate_as_of(data["current"]["as_of"])
+    current_as_of = validate_as_of(data["current"]["as_of"])
 
     investigated = data.get("already_investigated", [])
     if not isinstance(investigated, list):
@@ -248,12 +248,67 @@ def load_input_artifact(path: Path) -> dict[str, Any]:
             validate_as_of(entry["date"])
         except RunError as exc:
             raise RunError(f"{where}: {exc}") from exc
+
+    for key in ("upstream_series_key", "upstream_produced_by"):
+        value = data.get(key)
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            raise RunError(
+                f"input artifact's '{key}' must be a non-empty string without "
+                f"surrounding whitespace"
+            )
+
+    if "as_of" not in data["previous"]:
+        raise RunError("input artifact's 'previous' payload is missing 'as_of'")
+    previous_as_of = validate_as_of(data["previous"]["as_of"])
+    if previous_as_of >= current_as_of:
+        raise RunError(
+            "input artifact's 'previous.as_of' must predate 'current.as_of'; "
+            f"got previous={previous_as_of}, current={current_as_of}"
+        )
+
+    for label in ("current", "previous"):
+        payload = data[label]
+        nested_objects = {
+            "outliers_last5": "outliers",
+            "volatility_short": "volatility",
+            "volatility_long": "volatility",
+            "correlation_short": "correlation",
+        }
+        for block_name, value_name in nested_objects.items():
+            block = payload.get(block_name)
+            if not isinstance(block, dict):
+                raise RunError(
+                    f"input artifact's '{label}.{block_name}' must be an object"
+                )
+            value = block.get(value_name)
+            expected = list if value_name == "outliers" else dict
+            if not isinstance(value, expected):
+                raise RunError(
+                    f"input artifact's '{label}.{block_name}.{value_name}' "
+                    f"must be a {expected.__name__}"
+                )
+        if not isinstance(payload.get("returns_table"), dict):
+            raise RunError(f"input artifact's '{label}.returns_table' must be an object")
     return data
+
+
+def _validate_input_identity(data: dict[str, Any], config: AnomalyGateConfig) -> None:
+    expected = {
+        "upstream_series_key": config.upstream_series_key,
+        "upstream_produced_by": config.upstream_produced_by,
+    }
+    for key, configured in expected.items():
+        captured = data[key]
+        if captured != configured:
+            raise RunError(
+                f"input artifact's '{key}' does not match the configured identity"
+            )
 
 
 def gate_step(ctx: RunContext) -> dict[str, Any]:
     """Evaluate the gate. Pure with respect to the outside world."""
     data = load_input_artifact(ctx.input_artifact)
+    _validate_input_identity(data, ctx.config)
     already = frozenset(
         (entry["instrument"], entry["date"]) for entry in data.get("already_investigated", [])
     )
