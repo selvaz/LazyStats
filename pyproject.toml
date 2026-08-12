@@ -37,7 +37,15 @@ regression = [
     "statsmodels>=0.14",
     "scikit-learn>=1.1",
 ]
-test = ["lazystats[regimes]", "lazystats[regression]", "pytest>=8.2", "pytest-cov>=5.0"]
+# lazystats.weekly_anomaly — the review's three contracts are pydantic models,
+# so validating an agent's structured output is the model itself rather than a
+# hand-written checker that would drift from it. Optional like the two above:
+# nothing else imports pydantic, `import lazystats` never pulls it, and the
+# core stays dependency-free.
+review = ["pydantic>=2"]
+
+test = ["lazystats[regimes]", "lazystats[regression]", "lazystats[review]",
+        "pytest>=8.2", "pytest-cov>=5.0"]
 dev = ["lazystats[test]", "ruff>=0.6", "mypy>=1.10"]
 # Ecosystem contract tests (stabilization plan, ECO-010 / Train B PR B3):
 # validates lazystats.models.ReturnDataset against market-data-hub's
