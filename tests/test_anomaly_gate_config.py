@@ -100,6 +100,11 @@ class TestMissingOrWrongType:
         with pytest.raises(GateConfigError, match="max_corr_shifts_per_day"):
             load_gate_config(write(tmp_path, mutate(max_corr_shifts_per_day="8.5")))
 
+    @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+    def test_a_non_finite_threshold_is_refused(self, tmp_path, value):
+        with pytest.raises(GateConfigError, match="finite"):
+            load_gate_config(write(tmp_path, mutate(beta_z_threshold=value)))
+
     def test_a_blank_benchmark_is_refused(self, tmp_path):
         with pytest.raises(GateConfigError, match="beta_benchmark"):
             load_gate_config(write(tmp_path, mutate(beta_benchmark='"  "')))

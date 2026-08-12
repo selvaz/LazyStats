@@ -223,6 +223,7 @@ class ResultDepot:
         *,
         produced_by: str | None = None,
         cadence: str | None = None,
+        series_key: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Bounded index of stored results (no payloads)."""
@@ -234,6 +235,9 @@ class ResultDepot:
         if cadence:
             clauses.append("cadence = ?")
             params.append(cadence)
+        if series_key:
+            clauses.append("series_key = ?")
+            params.append(series_key)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self._con.execute(
             f"SELECT result_id, kind, produced_by, instruments, created_at, "

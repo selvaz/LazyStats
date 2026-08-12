@@ -35,6 +35,7 @@ from lazystats.daily_anomaly import (
     SetupError,
     build_live_plan,
     build_shadow_plan,
+    gate_step,
     is_inside,
     load_input_artifact,
     prepare_output_dir,
@@ -66,6 +67,8 @@ def payload(as_of="2026-08-10", outliers=()):
 def write_input(path: Path, *, as_of="2026-08-10", outliers=None, **extra) -> Path:
     body = {
         "trigger_result_id": "res_example",
+        "upstream_series_key": "example_daily_stats",
+        "upstream_produced_by": "scheduled:example_daily_stats",
         "current": payload(as_of, outliers if outliers is not None else [
             {"instrument": "ticker:AAA", "date": "2026-08-10", "z_score": 4.0,
              "log_return": -0.06, "direction": "down"},
@@ -353,6 +356,48 @@ class TestInputIsValidated:
         with pytest.raises(RunError, match=match):
             load_input_artifact(p)
 
+    @pytest.mark.parametrize("previous", ["2026-08-10", "2026-08-11"])
+    def test_previous_must_predate_current(self, tmp_path, previous):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["previous"]["as_of"] = previous
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="must predate"):
+            load_input_artifact(p)
+
+    @pytest.mark.parametrize("payload_name,block", [
+        ("current", "outliers_last5"),
+        ("current", "volatility_short"),
+        ("previous", "volatility_long"),
+        ("previous", "correlation_short"),
+        ("current", "returns_table"),
+    ])
+    def test_missing_metric_blocks_are_run_errors(self, tmp_path, payload_name, block):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        del body[payload_name][block]
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match=block):
+            load_input_artifact(p)
+
+    @pytest.mark.parametrize("key", ["upstream_series_key", "upstream_produced_by"])
+    def test_captured_identity_is_required(self, tmp_path, key):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        del body[key]
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match=key):
+            load_input_artifact(p)
+
+    @pytest.mark.parametrize("key", ["upstream_series_key", "upstream_produced_by"])
+    def test_captured_identity_must_match_the_config(self, cfg, tmp_path, key):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body[key] = "some.other.identity"
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="configured identity"):
+            gate_step(context(cfg, p, tmp_path / "out"))
+
 
 class TestCommandLine:
     def test_a_protected_directory_is_mandatory(self, tmp_path, input_artifact):
@@ -398,6 +443,18 @@ class TestCommandLine:
                     "--protected-dir", reports(tmp_path))
         assert r.returncode == 1
         assert "RUN ERROR" in r.stderr
+
+    def test_a_malformed_metric_is_a_run_error_without_a_traceback(self, tmp_path):
+        artifact = write_input(tmp_path / "input.json")
+        body = json.loads(artifact.read_text(encoding="utf-8"))
+        del body["current"]["volatility_short"]
+        artifact.write_text(json.dumps(body), encoding="utf-8")
+        r = run_cli("--config", str(EXAMPLE), "--input-artifact", str(artifact),
+                    "--output-dir", str(tmp_path / "out"),
+                    "--protected-dir", reports(tmp_path))
+        assert r.returncode == 1
+        assert "RUN ERROR" in r.stderr
+        assert "Traceback" not in r.stderr
 
     def test_a_good_run_succeeds_and_prints_the_artifact_path(self, tmp_path, input_artifact):
         out = tmp_path / "out"

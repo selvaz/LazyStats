@@ -106,46 +106,95 @@ _TEMPLATE = r"""<title>Weekly Anomaly Review — depot artifact</title>
 const ROW = __ROW_JSON__;
 const P = ROW.payload;
 
-function verdictPill(v) {
-  return `<span class="verdict-pill" style="background:var(--verdict-${v})">${v}</span>`;
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = String(text);
+  return node;
 }
-function synthList(items) {
-  if (!items || !items.length) return `<p class="synth-empty">None flagged.</p>`;
-  return `<ul class="synth-list">${items.map(i => `<li>${i}</li>`).join("")}</ul>`;
+
+function verdictPill(value) {
+  const node = element("span", "verdict-pill", value);
+  node.style.background = `var(--verdict-${value})`;
+  return node;
+}
+
+function appendSynthGroup(parent, label, items) {
+  const group = element("div", "synth-group");
+  group.appendChild(element("p", "synth-label", label));
+  if (!items || !items.length) {
+    group.appendChild(element("p", "synth-empty", "None flagged."));
+  } else {
+    const list = element("ul", "synth-list");
+    items.forEach(item => list.appendChild(element("li", "", item)));
+    group.appendChild(list);
+  }
+  parent.appendChild(group);
 }
 
 document.getElementById("title").textContent = `Weekly Anomaly Review — ${P.week_start} → ${P.week_end}`;
-document.getElementById("meta-grid").innerHTML = [
+const metaGrid = document.getElementById("meta-grid");
+[
   ["Week", `${P.week_start} → ${P.week_end}`],
   ["Daily items", P.n_daily_items],
   ["Result ID", ROW.result_id],
-].map(([k, v]) => `<div class="meta-item"><span class="k">${k}</span><span class="v">${v}</span></div>`).join("");
+].forEach(([key, value]) => {
+  const item = element("div", "meta-item");
+  item.appendChild(element("span", "k", key));
+  item.appendChild(element("span", "v", value));
+  metaGrid.appendChild(item);
+});
 
-document.getElementById("synthesis").innerHTML = `
-  <p class="narrative">${P.synthesis.narrative}</p>
-  <div class="synth-group"><p class="synth-label">New trends</p>${synthList(P.synthesis.new_trends)}</div>
-  <div class="synth-group"><p class="synth-label">Regime confirmations</p>${synthList(P.synthesis.regime_confirmations)}</div>
-  <div class="synth-group"><p class="synth-label">New risks</p>${synthList(P.synthesis.new_risks)}</div>
-`;
+const synthesis = document.getElementById("synthesis");
+synthesis.appendChild(element("p", "narrative", P.synthesis.narrative));
+appendSynthGroup(synthesis, "New trends", P.synthesis.new_trends);
+appendSynthGroup(synthesis, "Regime confirmations", P.synthesis.regime_confirmations);
+appendSynthGroup(synthesis, "New risks", P.synthesis.new_risks);
 
-const thead = `<tr><th>Instrument</th><th>Type</th><th>Date</th><th>Verdict</th><th>Note</th></tr>`;
-const tbody = P.verifications.map(v => `
-  <tr>
-    <td><b>${v.instrument}</b></td>
-    <td>${v.anomaly_type.replace(/_/g, " ")}</td>
-    <td class="mono">${v.date}</td>
-    <td>${verdictPill(v.verdict)}</td>
-    <td>${v.note}</td>
-  </tr>`).join("");
-document.getElementById("verify-table").innerHTML = P.verifications.length
-  ? `<thead>${thead}</thead><tbody>${tbody}</tbody>`
-  : `<tbody><tr><td style="color:var(--ink-faint);font-style:italic;">No daily items this week.</td></tr></tbody>`;
+const table = document.getElementById("verify-table");
+const body = document.createElement("tbody");
+if (P.verifications.length) {
+  const head = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  ["Instrument", "Type", "Date", "Verdict", "Note"].forEach(label =>
+    headerRow.appendChild(element("th", "", label)));
+  head.appendChild(headerRow);
+  table.appendChild(head);
+  P.verifications.forEach(verification => {
+    const row = document.createElement("tr");
+    const instrument = document.createElement("td");
+    instrument.appendChild(element("b", "", verification.instrument));
+    row.appendChild(instrument);
+    row.appendChild(element("td", "", verification.anomaly_type.replace(/_/g, " ")));
+    row.appendChild(element("td", "mono", verification.date));
+    const verdict = document.createElement("td");
+    verdict.appendChild(verdictPill(verification.verdict));
+    row.appendChild(verdict);
+    row.appendChild(element("td", "", verification.note));
+    body.appendChild(row);
+  });
+} else {
+  const row = document.createElement("tr");
+  const cell = element("td", "", "No daily items this week.");
+  cell.colSpan = 5;
+  cell.style.color = "var(--ink-faint)";
+  cell.style.fontStyle = "italic";
+  row.appendChild(cell);
+  body.appendChild(row);
+}
+table.appendChild(body);
 
-document.getElementById("footer").innerHTML = `
-  <span><b>Produced by</b> ${ROW.produced_by}</span>
-  <span><b>Cadence</b> ${ROW.cadence}</span>
-  <span><b>Saved</b> ${ROW.created_at}</span>
-`;
+const footer = document.getElementById("footer");
+[
+  ["Produced by", ROW.produced_by],
+  ["Cadence", ROW.cadence],
+  ["Saved", ROW.created_at],
+].forEach(([label, value]) => {
+  const item = document.createElement("span");
+  item.appendChild(element("b", "", label));
+  item.appendChild(document.createTextNode(` ${value}`));
+  footer.appendChild(item);
+});
 </script>
 """
 
@@ -153,4 +202,7 @@ document.getElementById("footer").innerHTML = `
 def render_html(row: dict[str, Any]) -> str:
     """Render ``row`` (the dict shape :meth:`ResultDepot.load` returns) as a
     self-contained HTML report. Pure function -- no I/O."""
-    return _TEMPLATE.replace("__ROW_JSON__", json.dumps(row))
+    serialized = json.dumps(row).replace("&", "\\u0026").replace("<", "\\u003c")
+    serialized = serialized.replace(">", "\\u003e")
+    serialized = serialized.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+    return _TEMPLATE.replace("__ROW_JSON__", serialized)

@@ -20,6 +20,7 @@ one, and it is handed in.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date, timedelta
 from typing import Any, Literal, Protocol
 
@@ -93,7 +94,7 @@ class Depot(Protocol):
     """
 
     def list(self, *, produced_by: str | None = ..., cadence: str | None = ...,
-             limit: int = ...) -> list[dict[str, Any]]: ...
+             series_key: str | None = ..., limit: int = ...) -> list[dict[str, Any]]: ...
 
     def load(self, result_id: str) -> dict[str, Any] | None: ...
 
@@ -105,7 +106,12 @@ def last_week_end(depot: Depot, config: WeeklyReviewConfig) -> str | None:
     assuming seven days is what stops a missed Saturday quietly dropping a
     week of explanations on the floor.
     """
-    entries = depot.list(produced_by=config.weekly_produced_by, cadence="stable", limit=1)
+    entries = depot.list(
+        produced_by=config.weekly_produced_by,
+        cadence="stable",
+        series_key=config.weekly_series_key,
+        limit=1,
+    )
     if not entries:
         return None
     row = depot.load(entries[0]["result_id"])
@@ -137,6 +143,7 @@ def gather_week(*, explanations_depot: Depot, stats_depot: Depot,
     daily_items: list[dict[str, Any]] = []
     for entry in explanations_depot.list(produced_by=config.daily_produced_by,
                                          cadence="stable",
+                                         series_key=config.daily_series_key,
                                          limit=config.daily_scan_limit):
         row = explanations_depot.load(entry["result_id"])
         if not row or row["payload"]["date"] <= since:
@@ -145,7 +152,9 @@ def gather_week(*, explanations_depot: Depot, stats_depot: Depot,
             daily_items.append({**item, "source_result_id": entry["result_id"]})
 
     stats_entries = stats_depot.list(produced_by=config.upstream_produced_by,
-                                     cadence="stable", limit=1)
+                                     cadence="stable",
+                                     series_key=config.upstream_series_key,
+                                     limit=1)
     latest_stats = stats_depot.load(stats_entries[0]["result_id"]) if stats_entries else None
 
     return {
@@ -214,6 +223,16 @@ def review(week: dict[str, Any], config: WeeklyReviewConfig, *,
     if not envelope.ok:
         raise RuntimeError(f"the weekly review agent failed: {envelope.error}")
     payload: WeeklyReview = envelope.payload
+    expected = Counter(
+        (item["instrument"], item["anomaly_type"], item["date"], item["category"])
+        for item in week["daily_items"]
+    )
+    actual = Counter(
+        (v.instrument, v.anomaly_type, v.date, v.original_category)
+        for v in payload.verifications
+    )
+    if actual != expected:
+        raise RuntimeError("weekly review verifications must match daily items one-to-one")
     return payload
 
 

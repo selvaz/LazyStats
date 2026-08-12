@@ -99,6 +99,28 @@ def test_depot_save_stable_with_series_key(tmp_path) -> None:
     depot.close()
 
 
+def test_depot_list_filters_series_before_applying_limit(tmp_path) -> None:
+    depot = ResultDepot(str(tmp_path / "series_filter.sqlite"))
+    wanted = depot.save(
+        kind="stats", produced_by="same.producer", instruments=[],
+        payload={"value": "wanted"}, provenance={"source": "test"},
+        cadence="stable", series_key="wanted_series",
+    )
+    depot.save(
+        kind="stats", produced_by="same.producer", instruments=[],
+        payload={"value": "other"}, provenance={"source": "test"},
+        cadence="stable", series_key="other_series",
+    )
+    rows = depot.list(
+        produced_by="same.producer",
+        cadence="stable",
+        series_key="wanted_series",
+        limit=1,
+    )
+    assert [row["result_id"] for row in rows] == [wanted]
+    depot.close()
+
+
 def test_depot_save_stable_point_append_on_change(tmp_path) -> None:
     depot = ResultDepot(str(tmp_path / "points.sqlite"))
     series_key = "spy_regime_daily"
