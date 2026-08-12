@@ -24,7 +24,9 @@ dependencies = []
 # `dataspace` -- that name belongs to an unrelated project on PyPI. Optional
 # on purpose: nothing else in the package imports it, so the repo installs
 # and runs standalone without it, and a test enforces that.
-lazydataspace = ["lazydataspace>=0.1.0"]
+lazydataspace = [
+    "lazydataspace @ git+https://github.com/selvaz/DataSpace.git@4c2b71c2e59ea3e7e003d06e6b9b54354edea07e",
+]
 # lazystats.regimes — the LazyHMM engines migrated here (plan v3.1 Fase 6
 # step 3). The rest of the library stays dependency-free: nothing outside
 # regimes/ imports these, and `import lazystats` never pulls them.
