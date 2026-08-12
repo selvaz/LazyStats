@@ -20,6 +20,7 @@ adds no dependency.
 """
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,12 @@ from typing import Any
 #: "since 31 December of the prior year" rather than a fixed day count, so it
 #: carries no ``days`` value.
 _YTD = "YTD"
+
+#: Extra weeks fetched beyond the longest configured window. Weekly bars are
+#: not guaranteed one per calendar week (holidays, partial weeks, listings that
+#: miss a print), so asking for exactly N weeks of calendar history can return
+#: fewer than N observations.
+_WEEK_CUSHION = 8
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,19 @@ class EtfStatsConfig:
     series_key: str
     produced_by: str
     return_horizons: tuple[ReturnHorizon, ...]
+
+    @property
+    def weekly_history_weeks(self) -> int:
+        """Calendar weeks of weekly history a run has to fetch.
+
+        Every weekly window — short, long and one-year — is sliced out of a
+        single fetch, so this is the longest of them plus a cushion. Sizing it
+        to ``long_weeks`` alone would silently shorten a ``one_year_weeks``
+        baseline that exceeds it: the slice returns whatever it finds, so the
+        run would report a volatility computed over fewer observations than
+        ``as_provenance`` claims.
+        """
+        return max(self.long_weeks, self.one_year_weeks) + _WEEK_CUSHION
 
     def as_provenance(self) -> dict[str, object]:
         """The parameter block recorded alongside a result.
@@ -134,6 +154,19 @@ def load_config(path: str | Path) -> EtfStatsConfig:
             f"{p.name}: 'instruments' entries must not have leading or trailing "
             f"whitespace: {untrimmed}"
         )
+    # Bare symbols only. ``io.datahub.load_returns`` also accepts the canonical
+    # ``ticker:SPY`` form, but the rest of the run does not: the report's
+    # instrument metadata is queried by bare symbol, and the renderer rebuilds
+    # the canonical key itself, so a canonical value here would be looked up as
+    # ``ticker:ticker:SPY`` and every cell would render blank while the analysis
+    # reported success. Refuse rather than normalise, for the same reason as the
+    # whitespace check above: one accepted spelling, stated in one place.
+    qualified = [s for s in instruments if ":" in s]
+    if qualified:
+        raise ConfigError(
+            f"{p.name}: 'instruments' must be bare symbols, not canonical ids: "
+            f"{qualified} — write 'SPY', not 'ticker:SPY'"
+        )
     if len(set(instruments)) != len(instruments):
         dupes = sorted({s for s in instruments if instruments.count(s) > 1})
         raise ConfigError(f"{p.name}: 'instruments' contains duplicates: {dupes}")
@@ -163,6 +196,12 @@ def load_config(path: str | Path) -> EtfStatsConfig:
         threshold = float(threshold)
     if not isinstance(threshold, float):
         raise ConfigError(f"{p.name}: 'outlier_threshold' must be a number")
+    # `nan` and `inf` are valid TOML float literals and neither is <= 0, so the
+    # positivity check alone lets them through — and `return_outliers` then
+    # rejects them mid-run. Fail here, where the contract promises configuration
+    # errors are raised.
+    if not math.isfinite(threshold):
+        raise ConfigError(f"{p.name}: 'outlier_threshold' must be finite, got {threshold}")
     if threshold <= 0:
         raise ConfigError(f"{p.name}: 'outlier_threshold' must be positive, got {threshold}")
 

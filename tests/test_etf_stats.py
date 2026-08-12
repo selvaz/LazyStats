@@ -157,6 +157,95 @@ class TestRefusesToGuessHorizons:
             load_config(write(tmp_path, body))
 
 
+class TestCanonicalIdsAreRefused:
+    """``io.datahub.load_returns`` accepts ``ticker:SPY``; this contract does not.
+
+    The rest of the run reads instrument metadata by bare symbol and the
+    renderer rebuilds the canonical key itself, so a canonical value here
+    would be looked up as ``ticker:ticker:SPY`` — an empty report with no
+    error anywhere. Refused at load time instead.
+    """
+
+    def test_canonical_instrument_id_is_refused(self, tmp_path):
+        body = VALID.replace('["SPY", "TLT"]', '["ticker:SPY", "TLT"]')
+        with pytest.raises(ConfigError, match="bare symbols"):
+            load_config(write(tmp_path, body))
+
+    def test_the_message_shows_the_accepted_spelling(self, tmp_path):
+        """Read by whoever is fixing a refused run."""
+        body = VALID.replace('["SPY", "TLT"]', '["ticker:SPY"]')
+        with pytest.raises(ConfigError) as exc:
+            load_config(write(tmp_path, body))
+        assert "ticker:SPY" in str(exc.value)
+        assert "'SPY'" in str(exc.value)
+
+    def test_any_domain_prefix_is_refused_not_just_ticker(self, tmp_path):
+        """Other domains are unsupported downstream too; none may pass silently."""
+        body = VALID.replace('["SPY", "TLT"]', '["isin:IE00B5BMR087"]')
+        with pytest.raises(ConfigError, match="bare symbols"):
+            load_config(write(tmp_path, body))
+
+
+class TestNonFiniteThreshold:
+    """`nan` and `inf` are valid TOML floats and neither is <= 0."""
+
+    @pytest.mark.parametrize("literal", ["nan", "inf", "+inf", "-inf"])
+    def test_non_finite_threshold_is_refused_at_load(self, tmp_path, literal):
+        body = VALID.replace("outlier_threshold = 2.0", f"outlier_threshold = {literal}")
+        with pytest.raises(ConfigError) as exc:
+            load_config(write(tmp_path, body))
+        assert "finite" in str(exc.value) or "positive" in str(exc.value)
+
+    def test_nan_does_not_reach_the_analysis(self, tmp_path):
+        """`return_outliers` rejects non-finite thresholds mid-run; the
+        configuration contract promises that failure happens at load."""
+        body = VALID.replace("outlier_threshold = 2.0", "outlier_threshold = nan")
+        with pytest.raises(ConfigError, match="finite"):
+            load_config(write(tmp_path, body))
+
+
+class TestWeeklyHistoryCoversEveryWindow:
+    """The fetch is sized once and sliced three ways.
+
+    ``_slice_last`` returns whatever it finds when asked for more rows than
+    exist, so a fetch shorter than the longest window does not fail — it
+    quietly computes that window over fewer observations while
+    ``as_provenance`` still reports the configured length.
+    """
+
+    def test_covers_the_one_year_baseline_when_it_exceeds_the_long_window(self, tmp_path):
+        body = VALID.replace("one_year_weeks = 52", "one_year_weeks = 520")
+        cfg = load_config(write(tmp_path, body))
+        assert cfg.one_year_weeks > cfg.long_weeks, "precondition of this test"
+        assert cfg.weekly_history_weeks > cfg.one_year_weeks, (
+            "a 520-week baseline fetched over long_weeks+8=112 weeks would be "
+            "computed from 112 observations while provenance claims 520"
+        )
+
+    def test_covers_the_long_window_when_it_is_the_longest(self, tmp_path):
+        cfg = load_config(write(tmp_path, VALID))
+        assert cfg.long_weeks > cfg.one_year_weeks, "precondition of this test"
+        assert cfg.weekly_history_weeks > cfg.long_weeks
+
+    @pytest.mark.parametrize("one_year", [1, 52, 104, 105, 520])
+    def test_covers_every_window_whatever_their_order(self, tmp_path, one_year):
+        body = VALID.replace("one_year_weeks = 52", f"one_year_weeks = {one_year}")
+        cfg = load_config(write(tmp_path, body))
+        for window in (cfg.short_weeks, cfg.long_weeks, cfg.one_year_weeks):
+            assert cfg.weekly_history_weeks > window
+
+    def test_the_runner_does_not_size_the_fetch_itself(self):
+        """Regression guard on the specific defect: the runner used to derive
+        the window from ``long_weeks`` alone, ignoring ``one_year_weeks``."""
+        runner = Path(__file__).resolve().parents[1] / "run_daily_etf_stats.py"
+        text = runner.read_text(encoding="utf-8")
+        assert "cfg.long_weeks + 8" not in text, (
+            "the fetch window is derived from the configuration's "
+            "weekly_history_weeks, which accounts for one_year_weeks too"
+        )
+        assert "cfg.weekly_history_weeks" in text
+
+
 class TestShippedExample:
     def test_the_example_config_actually_loads(self):
         """A broken example is worse than none: it is what a new user copies."""

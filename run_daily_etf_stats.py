@@ -153,7 +153,11 @@ def _make_analysis_steps(cfg: EtfStatsConfig) -> list:
     def fetch(arg: str) -> dict:
         params = json.loads(arg)
         as_of = params["as_of"]
-        long_start = (date.fromisoformat(as_of) - timedelta(weeks=cfg.long_weeks + 8)).isoformat()
+        # Sized by the configuration, not by long_weeks alone: every weekly
+        # window is sliced out of this one fetch, and a one-year baseline
+        # longer than the long window is a legitimate preset.
+        long_start = (date.fromisoformat(as_of)
+                      - timedelta(weeks=cfg.weekly_history_weeks)).isoformat()
         daily_start = (date.fromisoformat(as_of)
                        - timedelta(days=cfg.daily_lookback_days)).isoformat()
 
