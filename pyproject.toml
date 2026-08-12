@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "lazystats"
 version = "0.2.0"
-description = "Pure statistical library of the LazyBridge ecosystem — core statistics, models and hub-backed I/O. No lazybridge, no LLM wrapping (that lives in LazyTools)."
+description = "Pure statistical library of the LazyBridge ecosystem — core statistics, models and hub-backed I/O. The library itself never imports lazybridge and does no LLM wrapping (that lives in LazyTools); the shipped runners compose it into a deterministic Plan and ask for lazybridge explicitly."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
@@ -53,7 +53,15 @@ regression = [
 # core stays dependency-free.
 review = ["pydantic>=2"]
 
+# run_daily_etf_stats.py — the shipped runner composes the library into a
+# deterministic lazybridge Plan (no LLM in the loop). It is a script beside the
+# package, not part of it: `import lazystats` pulls nothing, and the library
+# itself still never imports lazybridge. Running that script does, so the
+# script's dependency is declared instead of assumed present.
+plans = ["lazybridge>=1.0"]
+
 test = ["lazystats[regimes]", "lazystats[regression]", "lazystats[review]",
+        "lazystats[plans]",
         "pytest>=8.2", "pytest-cov>=5.0"]
 dev = ["lazystats[test]", "ruff>=0.6", "mypy>=1.10"]
 # Ecosystem contract tests (stabilization plan, ECO-010 / Train B PR B3):
