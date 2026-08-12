@@ -66,7 +66,13 @@ def payload(as_of="2026-08-10", outliers=()):
 
 def write_input(path: Path, *, as_of="2026-08-10", outliers=None, **extra) -> Path:
     body = {
+        "schema_version": "1.1",
         "trigger_result_id": "res_example",
+        "comparison": {
+            "selection_policy": "latest_two_stable_rows",
+            "current_result_id": "res_example",
+            "previous_result_id": "res_previous",
+        },
         "upstream_series_key": "example_daily_stats",
         "upstream_produced_by": "scheduled:example_daily_stats",
         "current": payload(as_of, outliers if outliers is not None else [
@@ -389,6 +395,14 @@ class TestInputIsValidated:
         with pytest.raises(RunError, match=key):
             load_input_artifact(p)
 
+    def test_the_artifact_schema_version_is_explicit(self, tmp_path):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["schema_version"] = "1.0"
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="schema_version"):
+            load_input_artifact(p)
+
     @pytest.mark.parametrize("key", ["upstream_series_key", "upstream_produced_by"])
     def test_captured_identity_must_match_the_config(self, cfg, tmp_path, key):
         p = write_input(tmp_path / "input.json")
@@ -397,6 +411,27 @@ class TestInputIsValidated:
         p.write_text(json.dumps(body), encoding="utf-8")
         with pytest.raises(RunError, match="configured identity"):
             gate_step(context(cfg, p, tmp_path / "out"))
+
+    @pytest.mark.parametrize("mutation,match", [
+        ({"comparison": None}, "comparison"),
+        ({"comparison": {"selection_policy": "arbitrary_pair",
+                         "current_result_id": "res_example",
+                         "previous_result_id": "res_previous"}}, "selection_policy"),
+        ({"comparison": {"selection_policy": "latest_two_stable_rows",
+                         "current_result_id": "another_result",
+                         "previous_result_id": "res_previous"}}, "trigger_result_id"),
+        ({"comparison": {"selection_policy": "latest_two_stable_rows",
+                         "current_result_id": "res_example",
+                         "previous_result_id": "res_example"}}, "must differ"),
+    ])
+    def test_comparison_provenance_must_prove_an_adjacent_pair(
+            self, tmp_path, mutation, match):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body.update(mutation)
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match=match):
+            load_input_artifact(p)
 
 
 class TestCommandLine:

@@ -289,6 +289,31 @@ def load_input_artifact(path: Path) -> dict[str, Any]:
                 )
         if not isinstance(payload.get("returns_table"), dict):
             raise RunError(f"input artifact's '{label}.returns_table' must be an object")
+
+    comparison = data.get("comparison")
+    if not isinstance(comparison, dict):
+        raise RunError("input artifact's 'comparison' must be an object")
+    if comparison.get("selection_policy") != "latest_two_stable_rows":
+        raise RunError(
+            "input artifact's 'comparison.selection_policy' must be "
+            "'latest_two_stable_rows'"
+        )
+    for key in ("current_result_id", "previous_result_id"):
+        value = comparison.get(key)
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            raise RunError(
+                f"input artifact's 'comparison.{key}' must be a non-empty string "
+                "without surrounding whitespace"
+            )
+    if comparison["current_result_id"] != trigger:
+        raise RunError(
+            "input artifact's 'comparison.current_result_id' must match "
+            "'trigger_result_id'"
+        )
+    if comparison["previous_result_id"] == comparison["current_result_id"]:
+        raise RunError("comparison current and previous result ids must differ")
+    if data.get("schema_version") != "1.1":
+        raise RunError("input artifact's 'schema_version' must be '1.1'")
     return data
 
 
