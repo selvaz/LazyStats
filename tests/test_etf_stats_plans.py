@@ -16,6 +16,12 @@ from pathlib import Path
 
 import pytest
 
+# The runner reads prices through market-data-hub, a private git package the
+# default test extras deliberately leave out — same treatment as
+# tests/test_contract_lazydatacore.py, which skips for the same reason. The
+# contract job installs it and runs these for real.
+pytest.importorskip("market_data_hub")
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "run_daily_etf_stats.py"
 EXAMPLE = ROOT / "examples" / "etf_daily_stats.example.toml"
