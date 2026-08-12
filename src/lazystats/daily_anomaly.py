@@ -175,7 +175,7 @@ def prepare_output_dir(ctx: RunContext) -> None:
         raise SetupError(f"output directory unusable: {ctx.output_dir} ({exc})") from exc
 
 
-def load_input_artifact(path: Path) -> dict:
+def load_input_artifact(path: Path) -> dict[str, Any]:
     """Read a captured input: two consecutive payloads and their trigger id.
 
     Reading a captured artifact rather than a database is what keeps the
@@ -251,7 +251,7 @@ def load_input_artifact(path: Path) -> dict:
     return data
 
 
-def gate_step(ctx: RunContext) -> dict:
+def gate_step(ctx: RunContext) -> dict[str, Any]:
     """Evaluate the gate. Pure with respect to the outside world."""
     data = load_input_artifact(ctx.input_artifact)
     already = frozenset(
@@ -289,7 +289,7 @@ def artifact_path(ctx: RunContext, as_of: str) -> Path:
     return out
 
 
-def write_gate_artifact(ctx: RunContext, artifact: dict) -> Path:
+def write_gate_artifact(ctx: RunContext, artifact: dict[str, Any]) -> Path:
     out = artifact_path(ctx, artifact["as_of"])
     try:
         ctx.output_dir.mkdir(parents=True, exist_ok=True)
@@ -303,11 +303,12 @@ def build_shadow_plan(ctx: RunContext) -> list[tuple[str, Callable[[], Any]]]:
     """Gate, then write. Nothing else exists in this plan."""
     state: dict[str, Any] = {}
 
-    def gate() -> dict:
-        state["artifact"] = gate_step(ctx)
-        return state["artifact"]
+    def gate() -> dict[str, Any]:
+        artifact = gate_step(ctx)
+        state["artifact"] = artifact
+        return artifact
 
-    def write() -> dict:
+    def write() -> dict[str, Any]:
         path = write_gate_artifact(ctx, state["artifact"])
         return {"artifact_path": str(path),
                 "anomaly_count": state["artifact"]["anomaly_count"]}
@@ -318,7 +319,7 @@ def build_shadow_plan(ctx: RunContext) -> list[tuple[str, Callable[[], Any]]]:
 def build_live_plan(
     ctx: RunContext,
     *,
-    explain: Callable[[dict], Any],
+    explain: Callable[[dict[str, Any]], Any],
     persist: Callable[[Any], Any],
     render: Callable[[Any], Any],
     send: Callable[[Any], Any],
@@ -332,9 +333,10 @@ def build_live_plan(
     """
     state: dict[str, Any] = {}
 
-    def gate() -> dict:
-        state["artifact"] = gate_step(ctx)
-        return state["artifact"]
+    def gate() -> dict[str, Any]:
+        artifact = gate_step(ctx)
+        state["artifact"] = artifact
+        return artifact
 
     return [
         ("gate", gate),
@@ -345,14 +347,14 @@ def build_live_plan(
     ]
 
 
-def run_shadow(ctx: RunContext) -> dict:
+def run_shadow(ctx: RunContext) -> dict[str, Any]:
     """Check the preconditions, then execute the shadow plan.
 
     The checks are here rather than in the caller so that every route into a
     shadow run passes through them.
     """
     prepare_output_dir(ctx)
-    result: dict = {}
+    result: dict[str, Any] = {}
     for _name, step in build_shadow_plan(ctx):
         result = step()
     return result
