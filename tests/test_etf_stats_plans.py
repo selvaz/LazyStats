@@ -173,7 +173,13 @@ print("LOADED:" + ",".join(sorted(hits)))
             encoding="utf-8",
         )
         env = dict(os.environ)
-        env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + env.get("PYTHONPATH", "")
+        # The probe is itself under tmp_path, so unlike running the root-level
+        # runner directly its script directory is not the repository root.
+        # Include both declarative import roots: src/ for lazystats and the
+        # repository root for the runner's sibling etf_stats_report module.
+        env["PYTHONPATH"] = os.pathsep.join(
+            (str(ROOT / "src"), str(ROOT), env.get("PYTHONPATH", ""))
+        )
         r = subprocess.run([sys.executable, str(probe)], capture_output=True,
                            text=True, cwd=str(ROOT), env=env)
         assert r.returncode == 0, r.stderr
