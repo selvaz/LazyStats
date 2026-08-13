@@ -105,8 +105,12 @@ def compare_fits(baseline: WindowFit | None, candidate: WindowFit | None) -> dic
     else:
         baseline_groups = calm_or_highvol(list(baseline.states))
         candidate_groups = calm_or_highvol(list(candidate.states))
-        baseline_tier = baseline_groups.get(baseline.current_state, "single")
-        candidate_tier = candidate_groups.get(candidate.current_state, "single")
+        # A fit that reported no current state has no group to look up, and
+        # "single" is what the collapsed vocabulary calls "nothing to compare".
+        baseline_tier = ("single" if baseline.current_state is None
+                         else baseline_groups.get(baseline.current_state, "single"))
+        candidate_tier = ("single" if candidate.current_state is None
+                          else candidate_groups.get(candidate.current_state, "single"))
         mode = "collapsed_2group"
 
     if "single" in (baseline_tier, candidate_tier):
@@ -181,7 +185,7 @@ def build_payload(
         The comparison record: a per-symbol list, the counts, and the provenance
         needed to read the verdicts a year from now.
     """
-    symbols = [
+    symbols: list[dict[str, Any]] = [
         {"symbol": symbol, "comparison": compare_fits(baseline, candidate)}
         for symbol, baseline, candidate in readings
     ]

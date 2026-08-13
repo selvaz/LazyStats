@@ -98,14 +98,22 @@ class SymbolReport:
     name: str | None = None
     error: str | None = None
     n_states: int = 0
+    current_state: int | None = None
     current_label: str | None = None
     current_tier: str = "unknown"
+    is_high_vol: bool = False
     prob_high_vol: float | None = None
+    #: The whole probability vector behind the current call, one entry per
+    #: state. What separates a regime read with conviction from a coin flip.
+    current_state_probs: tuple[float, ...] = ()
     changed_today: bool = False
     states: tuple[dict[str, Any], ...] = ()
     transmat: tuple[tuple[float, ...], ...] = ()
     bic: float | None = None
     loglik: float | None = None
+    data_start: str | None = None
+    data_end: str | None = None
+    n_obs: int | None = None
     chart: bytes | None = None
     revisions: tuple[Revision, ...] = field(default_factory=tuple)
 

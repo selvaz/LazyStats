@@ -182,3 +182,34 @@ class TestAFitBecomesAReportRecord:
         entry = runner._entry(config(), record, symbol="GLD",
                               revisions=(), changed_today=False)
         assert entry.prob_high_vol == 0.42
+
+
+class TestTheRunRecordCarriesTheFullReading:
+    """The fields the browsable report needs, which the port had dropped."""
+
+    def test_the_probability_vector_reaches_the_record(self):
+        runner = load_runner()
+        record = fitted()
+        record["readings"][-1]["state_probs"] = [0.7, 0.3]
+        entry = runner._entry(config(), record, symbol="GLD",
+                              revisions=(), changed_today=False)
+        assert entry.current_state_probs == (0.7, 0.3)
+
+    def test_the_current_state_index_reaches_the_record(self):
+        runner = load_runner()
+        entry = runner._entry(config(), fitted(current=1), symbol="GLD",
+                              revisions=(), changed_today=False)
+        assert entry.current_state == 1
+
+    def test_the_high_vol_flag_reaches_the_record(self):
+        runner = load_runner()
+        entry = runner._entry(config(), fitted(current=1), symbol="GLD",
+                              revisions=(), changed_today=False)
+        assert entry.is_high_vol is True
+
+    def test_the_data_span_reaches_the_record(self):
+        runner = load_runner()
+        entry = runner._entry(config(), fitted(), symbol="GLD",
+                              revisions=(), changed_today=False)
+        assert (entry.data_start, entry.data_end) == (DATES[0], DATES[-1])
+        assert entry.n_obs == len(DATES)

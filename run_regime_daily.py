@@ -33,7 +33,14 @@ from lazybridge import Agent, Plan, Step
 
 from lazystats.io.depot import ResultDepot
 from lazystats.regimes.config import ConfigError, RegimeConfig, load_config
-from lazystats.regimes.estimation import fit_symbol
+from lazystats.regimes.daily_payload import REPORT_KIND, REPORT_SERIES_KEY
+from lazystats.regimes.daily_payload import build_payload as build_daily_payload
+from lazystats.regimes.estimation import (
+    PERIODS_PER_YEAR,
+    PRODUCED_BY,
+    PROVENANCE_SOURCE,
+    fit_symbol,
+)
 from lazystats.regimes.persist import write_failure, write_fit
 from lazystats.regimes.report import Revision, SymbolReport
 from lazystats.regimes.report import render_html as render_report
@@ -81,16 +88,22 @@ def _entry(cfg: RegimeConfig, fitted: dict, *, symbol: str,
         symbol=symbol,
         name=cfg.names.get(symbol),
         n_states=int(diagnostics.get("n_states", 0)),
+        current_state=current,
         current_label=labels[current] if current is not None and current < len(labels)
         else None,
         current_tier=tier_of(
             volatility_tiers([s["annualized_volatility"] for s in states]), current),
+        is_high_vol=bool(latest.get("is_high_vol")),
         prob_high_vol=latest.get("prob_high_vol"),
+        current_state_probs=tuple(latest.get("state_probs") or ()),
         changed_today=changed_today,
         states=tuple(states),
         transmat=tuple(tuple(row) for row in diagnostics.get("transmat") or ()),
         bic=diagnostics.get("bic"),
         loglik=diagnostics.get("loglik"),
+        data_start=diagnostics.get("data_start"),
+        data_end=diagnostics.get("data_end"),
+        n_obs=diagnostics.get("n_obs"),
         chart=base64.b64decode(chart) if chart else None,
         revisions=revisions,
     )
@@ -158,6 +171,12 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
             depot.close()
 
         bundle["outcomes"] = outcomes
+        # Small enough to travel: this record carries no images, which is the
+        # whole reason it can be stored and read back later.
+        bundle["daily_payload"] = build_daily_payload(
+            entries, as_of=bundle["as_of"], periods_per_year=PERIODS_PER_YEAR,
+            source=PROVENANCE_SOURCE)
+
         if report_path is not None:
             report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
@@ -250,18 +269,82 @@ def summarise(arg: str) -> dict:
     return bundle
 
 
+def _make_persist_report(*, depot_path: str, dry_run: bool):
+    """Store the run's record, so the day can be re-read without refitting."""
+
+    def persist_report(arg: str) -> dict:
+        bundle = json.loads(arg)
+        if dry_run:
+            bundle["report_result_id"] = None
+            return bundle
+
+        payload = bundle["daily_payload"]
+        depot = ResultDepot(depot_path)
+        try:
+            bundle["report_result_id"] = depot.save(
+                kind=REPORT_KIND,
+                produced_by=PRODUCED_BY,
+                instruments=sorted(s["symbol"] for s in payload["symbols"]),
+                payload=payload,
+                provenance=payload["provenance"],
+                cadence="stable",
+                # One series per window: the eight-year run's record must not
+                # upsert into the full-history one's.
+                series_key=f"{REPORT_SERIES_KEY}:{bundle['window']}",
+            )
+        finally:
+            depot.close()
+        return bundle
+
+    return persist_report
+
+
 def build_plan(cfg: RegimeConfig, *, window: str, as_of: date, market_db: str,
                production_db: str, depot_path: str, dry_run: bool,
                report_path: Path | None = None, generated: str = "") -> Plan:
-    """The pipeline: resolve, fit and write, then count."""
+    """The pipeline: resolve, fit and write, store the run's record, then count."""
     return Plan(
         Step(_make_plan_run(cfg, window=window, as_of=as_of, market_db=market_db,
                             production_db=production_db), name="plan_run"),
         Step(_make_fit_and_persist(cfg, depot_path=depot_path, dry_run=dry_run,
                                    report_path=report_path, generated=generated),
              name="fit_and_persist"),
+        Step(_make_persist_report(depot_path=depot_path, dry_run=dry_run),
+             name="persist_report"),
         Step(summarise, name="summarise"),
     )
+
+
+def write_daily_report(bundle: dict, *, depot_path: str, out_dir: Path) -> Path:
+    """Render the run's stored record as the browsable report.
+
+    A saved run is re-read from the depot rather than rendered from the bundle,
+    so the page is a function of what was actually written. A dry run has
+    nothing to re-read, so the same shape is assembled in memory and marked as
+    unsaved — the page then says so, instead of showing a result id that would
+    not be there tomorrow.
+    """
+    from lazystats.regimes.daily_render import render_html
+
+    result_id = bundle.get("report_result_id")
+    row = None
+    if result_id:
+        depot = ResultDepot(depot_path)
+        try:
+            row = depot.load(result_id)
+        finally:
+            depot.close()
+    if row is None:
+        row = {"result_id": "", "kind": REPORT_KIND, "produced_by": PRODUCED_BY,
+               "cadence": "stable", "created_at": "(dry run — not saved)",
+               "payload": bundle["daily_payload"],
+               "provenance": bundle["daily_payload"]["provenance"]}
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"regime_daily_{bundle['as_of']}"
+    out_path = out_dir / (f"{stem}_{result_id}.html" if result_id else f"{stem}.html")
+    out_path.write_text(render_html(row), encoding="utf-8")
+    return out_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -284,9 +367,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true",
                    help="Fit and report, write nothing to the depot.")
     p.add_argument("--report-dir", metavar="PATH",
-                   help="Write the daily HTML report, with a chart per symbol, "
-                        "into this directory. Omitted, no charts are drawn at "
-                        "all — which is most of the run's cost.")
+                   help="Write both daily reports into this directory: the "
+                        "chart-based one, and the browsable one rendered from "
+                        "the run's stored record. Omitted, no charts are drawn "
+                        "at all — which is most of the run's cost — and the "
+                        "record is still stored.")
     return p
 
 
@@ -327,7 +412,10 @@ def main() -> int:
 
     summary = bundle["summary"]
     if bundle.get("report"):
-        summary["report"] = bundle["report"]
+        summary["chart_report"] = bundle["report"]
+    if args.report_dir:
+        summary["daily_report"] = str(write_daily_report(
+            bundle, depot_path=str(Path(args.depot)), out_dir=Path(args.report_dir)))
     print(json.dumps(summary, indent=2))
     return 1 if summary["failed"] else 0
 

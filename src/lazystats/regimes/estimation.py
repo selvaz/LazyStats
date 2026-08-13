@@ -262,9 +262,16 @@ def fit_symbol(
     panel = run.panel
     states = panel[f"{returns.symbol}_state"].astype(int).tolist()
     high_vol = panel[f"{returns.symbol}_highvol"].astype(bool).tolist()
-    # The probability of being in the turbulent state. Continuous, so it is
-    # stored but never compared — see persist.CHANGE_KEYS.
+    # The probability of being in the turbulent state, and the whole vector it
+    # was taken from. Continuous, so both are stored and neither is compared —
+    # see persist.CHANGE_KEYS. The vector is what lets a report show how
+    # confident a regime call was, instead of only what it decided.
     prob_high_vol = panel[f"P_{returns.symbol}_HV"].astype(float).tolist()
+    state_probs = [
+        [float(p) for p in row]
+        for row in zip(*(panel[f"P_{returns.symbol}_S{s}"].astype(float).tolist()
+                         for s in range(n_states)), strict=True)
+    ]
     dates = [str(d.date()) for d in panel.index]
 
     chart: str | None = None
@@ -281,8 +288,9 @@ def fit_symbol(
         "dates": dates,
         "readings": [
             {"state": s, "n_states": n_states, "is_high_vol": bool(h),
-             "prob_high_vol": float(p)}
-            for s, h, p in zip(states, high_vol, prob_high_vol, strict=True)
+             "prob_high_vol": float(p), "state_probs": probs}
+            for s, h, p, probs in zip(states, high_vol, prob_high_vol, state_probs,
+                                      strict=True)
         ],
         "diagnostics": {
             "n_states": n_states,
