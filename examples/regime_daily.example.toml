@@ -1,0 +1,54 @@
+# Example configuration for the regime estimation runs.
+#
+# Deliberately small and generic: it shows the shape, it is not anyone's real
+# universe. Nothing reads this file unless you pass it explicitly:
+#
+#     python run_regime_daily.py --config examples/regime_daily.example.toml
+#
+# There is no default config. A scheduled job fitting an unstated universe is
+# worse than one that refuses to start.
+
+# The symbols to fit. Bare tickers: the depot keys regime series by bare symbol,
+# so a canonical id like "ticker:GLD" would start a parallel series instead of
+# continuing the existing one.
+instruments = ["SPY", "TLT", "GLD"]
+
+# Fitting parameters. The engine searches up to `s_max` states, from `n_starts`
+# random initialisations, seeded by `random_state` so a rerun reproduces.
+s_max = 3
+n_starts = 20
+random_state = 123
+
+# How far back a run re-examines its own past readings, in days. A regime label
+# for an old trading date can change when new data arrives, and this is the
+# window in which such a revision is looked for and recorded.
+retro_days = 30
+
+# ---------------------------------------------------------------- windows
+#
+# Each window is one way of estimating the same symbol. A window with no
+# `lookback_years` fits the whole available history, and its estimates carry no
+# variant tag -- which is what keeps them in the series the existing history
+# already lives in. There can be only one such window.
+#
+# Every other window is namespaced by its length, so the fits never overwrite
+# each other.
+
+[windows.full]
+# no lookback_years: the whole available history
+
+[windows.8y]
+lookback_years = 8
+
+# --------------------------------------------------------------- comparisons
+#
+# What the method actually offers: contrast the regimes two windows produce for
+# the same symbol, and surface where they disagree. Does restricting to recent
+# history change how many regimes a symbol shows, or which one it is in now?
+#
+# Nothing here is privileged. "full against 8y" is one question among many; two
+# short windows against each other is the same operation.
+
+[comparisons.full_vs_8y]
+baseline = "full"
+candidate = "8y"
