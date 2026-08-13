@@ -1,0 +1,217 @@
+#!/usr/bin/env python
+"""Daily regime estimation, as a deterministic lazybridge Plan.
+
+No LLM in the loop. Every step is a plain Python callable and the Plan engine
+threads the running bundle between them as JSON text, which is why each step
+accepts and returns a JSON-serialisable dict.
+
+**The bundle carries identifiers, never series.** A step hands on the symbols,
+the window and the depot keys — not the returns. With a hundred symbols and a
+decade of daily history, threading the data itself would put megabytes through
+every step boundary, and each step would be holding a copy of something that
+belongs in one place. The prices are loaded inside the step that fits them and
+are gone by the time it returns.
+
+That is also what makes these usable as agent tools later. Each operation is an
+ordinary typed function in ``lazystats.regimes``: ``Tool.wrap(fit_symbol)`` is
+the whole implementation, with no wrapper class re-declaring its parameters.
+
+The preset — which instruments, over which windows, with which fitting
+parameters — comes from ``--config``. There is no default: a scheduled job
+fitting an unstated universe is worse than one that refuses to start.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import date, datetime, timedelta
+from pathlib import Path
+
+from lazybridge import Agent, Plan, Step
+
+from lazystats.io.depot import ResultDepot
+from lazystats.regimes.config import ConfigError, RegimeConfig, load_config
+from lazystats.regimes.estimation import fit_symbol
+from lazystats.regimes.persist import write_failure, write_fit
+from lazystats.regimes.series import series_key
+
+
+def _window_start(as_of: date, lookback_years: int | None) -> str:
+    """The first date a window admits, or empty for all available history."""
+    if lookback_years is None:
+        return ""
+    return (as_of - timedelta(days=365 * lookback_years)).isoformat()
+
+
+def _make_plan_run(cfg: RegimeConfig, *, window: str, as_of: date,
+                   market_db: str, production_db: str):
+    """Resolve what this run will do, without touching prices or the depot."""
+
+    def plan_run(arg: str) -> dict:
+        chosen = cfg.window(window)
+        return {
+            "window": chosen.name,
+            "variant": chosen.variant,
+            "start": _window_start(as_of, chosen.lookback_years),
+            "as_of": as_of.isoformat(),
+            "symbols": list(cfg.instruments),
+            "market_db": market_db,
+            "production_db": production_db,
+        }
+
+    return plan_run
+
+
+def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool):
+    """Fit each symbol and write it, one at a time.
+
+    The prices live only inside this step, and only for one symbol at a time:
+    the bundle that comes out carries an outcome per symbol, not a series.
+    """
+
+    def fit_and_persist(arg: str) -> dict:
+        bundle = json.loads(arg)
+        depot = ResultDepot(depot_path)
+        outcomes: list[dict] = []
+
+        for symbol in bundle["symbols"]:
+            key = series_key(
+                symbol,
+                market_db=bundle["market_db"],
+                production_db=bundle["production_db"],
+                variant=bundle["variant"],
+            )
+            try:
+                fitted = fit_symbol(
+                    symbol,
+                    start=bundle["start"],
+                    end=bundle["as_of"],
+                    s_max=cfg.s_max,
+                    n_starts=cfg.n_starts,
+                    random_state=cfg.random_state,
+                )
+            except Exception as exc:  # one symbol's failure must not end the run
+                message = f"{type(exc).__name__}: {exc}"
+                if not dry_run:
+                    write_failure(depot, symbol=symbol, series_key=key,
+                                  estimation_date=bundle["as_of"], error=message)
+                outcomes.append({"symbol": symbol, "series_key": key,
+                                 "status": "error", "detail": message})
+                continue
+
+            if dry_run:
+                outcomes.append({"symbol": symbol, "series_key": key, "status": "ok",
+                                 "n_states": fitted["diagnostics"]["n_states"],
+                                 "points_written": 0, "detail": "dry run: nothing written"})
+                continue
+
+            written = write_fit(
+                depot,
+                symbol=fitted["symbol"],
+                series_key=key,
+                estimation_date=bundle["as_of"],
+                diagnostics=fitted["diagnostics"],
+                dates=fitted["dates"],
+                readings=fitted["readings"],
+                retro_days=cfg.retro_days,
+            )
+            outcomes.append({
+                "symbol": symbol, "series_key": key, "status": "ok",
+                "n_states": fitted["diagnostics"]["n_states"],
+                "points_written": written.points_written,
+                "detail": written.selection_reason,
+            })
+
+        bundle["outcomes"] = outcomes
+        return bundle
+
+    return fit_and_persist
+
+
+def summarise(arg: str) -> dict:
+    """Count what happened, and keep the failures legible."""
+    bundle = json.loads(arg)
+    outcomes = bundle["outcomes"]
+    failures = [o for o in outcomes if o["status"] == "error"]
+    bundle["summary"] = {
+        "window": bundle["window"],
+        "as_of": bundle["as_of"],
+        "symbols": len(outcomes),
+        "fitted": len(outcomes) - len(failures),
+        "failed": len(failures),
+        "points_written": sum(o.get("points_written", 0) for o in outcomes),
+        "failures": [{"symbol": f["symbol"], "detail": f["detail"]} for f in failures],
+    }
+    return bundle
+
+
+def build_plan(cfg: RegimeConfig, *, window: str, as_of: date, market_db: str,
+               production_db: str, depot_path: str, dry_run: bool) -> Plan:
+    """The pipeline: resolve, fit and write, then count."""
+    return Plan(
+        Step(_make_plan_run(cfg, window=window, as_of=as_of, market_db=market_db,
+                            production_db=production_db), name="plan_run"),
+        Step(_make_fit_and_persist(cfg, depot_path=depot_path, dry_run=dry_run),
+             name="fit_and_persist"),
+        Step(summarise, name="summarise"),
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--config", required=True, metavar="PATH",
+                   help="Regime configuration (TOML). Required: there is no default preset.")
+    p.add_argument("--window", required=True, metavar="NAME",
+                   help="Which declared window to fit, by name.")
+    p.add_argument("--depot", required=True, metavar="PATH",
+                   help="Result depot to write to.")
+    p.add_argument("--market-db", required=True, metavar="PATH",
+                   help="The market database the prices come from.")
+    p.add_argument("--production-db", required=True, metavar="PATH",
+                   help="Which database counts as production. When it differs from "
+                        "--market-db the series are namespaced, so a staging run "
+                        "cannot supersede production's history.")
+    p.add_argument("--as-of", metavar="YYYY-MM-DD",
+                   help="Estimation date (default: today).")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Fit and report, write nothing.")
+    return p
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+    try:
+        cfg = load_config(args.config)
+        if args.window not in {w.name for w in cfg.windows}:
+            raise ConfigError(
+                f"--window {args.window!r} is not declared; the configuration has "
+                f"{sorted(w.name for w in cfg.windows)}"
+            )
+    except ConfigError as exc:
+        print(f"configuration: {exc}", file=sys.stderr)
+        return 2
+
+    as_of = (datetime.strptime(args.as_of, "%Y-%m-%d").date() if args.as_of
+             else datetime.now().date())
+
+    plan = build_plan(
+        cfg,
+        window=args.window,
+        as_of=as_of,
+        market_db=args.market_db,
+        production_db=args.production_db,
+        depot_path=str(Path(args.depot)),
+        dry_run=args.dry_run,
+    )
+    agent = Agent(engine=plan, name="regime_daily")
+    result = agent(json.dumps({"as_of": as_of.isoformat()}))
+
+    summary = json.loads(result.text())["summary"]
+    print(json.dumps(summary, indent=2))
+    return 1 if summary["failed"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

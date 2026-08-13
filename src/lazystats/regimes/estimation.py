@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from lazystats.io.datahub import load_returns
 from lazystats.models import ReturnDataset
@@ -110,6 +111,80 @@ def symbol_returns(
     return SymbolReturns(symbol=symbol, dates=tuple(dates), values=tuple(values))
 
 
+def fit_symbol(
+    instrument: str,
+    *,
+    start: str = "",
+    end: str = "",
+    s_max: int = 3,
+    n_starts: int = 20,
+    random_state: int = 123,
+) -> dict[str, Any]:
+    """Fit a regime model to one symbol's daily returns.
+
+    A full refit over whatever history the window allows, rather than applying
+    stored parameters — which is what makes it possible to see whether one more
+    day changes the model's reading of the past.
+
+    Args:
+        instrument: Symbol or canonical id.
+        start: Inclusive ISO date, or empty for all available history.
+        end: Inclusive ISO date, or empty for the latest available.
+        s_max: Most states the search may consider.
+        n_starts: Random initialisations per state count.
+        random_state: Seed, so a rerun reproduces.
+
+    Returns:
+        ``symbol``, the fitted ``diagnostics``, the trading ``dates`` and one
+        ``readings`` entry per date. The shape
+        :func:`~lazystats.regimes.persist.write_fit` expects.
+
+    Raises:
+        ValueError: The symbol has no usable returns over the window.
+        ImportError: The ``regimes`` extra is not installed.
+    """
+    # Imported here, not at module scope: `import lazystats` stays free of
+    # numpy, pandas and hmmlearn, which is the whole point of the extras.
+    import pandas as pd
+
+    from lazystats.regimes import MSRegimeEngine
+
+    returns = symbol_returns(instrument, start=start, end=end)
+    frame = pd.DataFrame(
+        {returns.symbol: list(returns.values)},
+        index=pd.to_datetime(list(returns.dates)),
+    )
+
+    engine = MSRegimeEngine(S_max=s_max, n_starts=n_starts, random_state=random_state)
+    run = engine.fit(frame)
+    meta = run.meta[returns.symbol]
+    n_states = int(meta["S"])
+
+    panel = run.panel
+    states = panel[f"{returns.symbol}_state"].astype(int).tolist()
+    high_vol = panel[f"{returns.symbol}_highvol"].astype(bool).tolist()
+    dates = [str(d.date()) for d in panel.index]
+
+    return {
+        "symbol": returns.symbol,
+        "dates": dates,
+        "readings": [
+            {"state": s, "n_states": n_states, "is_high_vol": bool(h)}
+            for s, h in zip(states, high_vol, strict=True)
+        ],
+        "diagnostics": {
+            "n_states": n_states,
+            "criterion": "bic",
+            "bic": float(meta["bic"]),
+            "loglik": float(meta["loglik"]),
+            "data_start": dates[0],
+            "data_end": dates[-1],
+            "n_obs": len(dates),
+            "labels": meta["labels"],
+        },
+    }
+
+
 def is_production(market_db: str | Path, production_db: str | Path) -> bool:
     """Whether estimates from ``market_db`` may supersede production's series.
 
@@ -125,6 +200,7 @@ __all__ = [
     "PRODUCED_BY",
     "PROVENANCE_SOURCE",
     "SymbolReturns",
+    "fit_symbol",
     "is_production",
     "symbol_returns",
 ]
