@@ -20,6 +20,7 @@ place no reader is looking, and the histories restart in silence.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,12 @@ from typing import Any
 from lazystats.io.datahub import load_returns
 from lazystats.models import ReturnDataset
 from lazystats.regimes.series import bare_symbol
+
+#: Trading periods in a year, for annualising a fit made on daily returns. The
+#: fit itself is frequency-agnostic; this number is what turns its per-period
+#: parameters into the quantities a reader compares. It is recorded next to the
+#: statistics it produced, so a row can never be read under a different one.
+PERIODS_PER_YEAR = 252
 
 #: The producer identity every regime result is written under. Downstream
 #: selection depends on it; it survives the module moving between repositories
@@ -111,6 +118,90 @@ def symbol_returns(
     return SymbolReturns(symbol=symbol, dates=tuple(dates), values=tuple(values))
 
 
+def _scalar(value: Any) -> float:
+    """The one number inside an arbitrarily nested single-element sequence.
+
+    The engine reports a univariate fit's variance at a nesting depth that
+    depends on its covariance type: ``[[v]]`` for a full covariance, ``[v]`` for
+    a diagonal one. Indexing at a fixed depth would read a list as a float on
+    one branch and crash on the other, so the depth is walked instead.
+
+    Raises:
+        ValueError: The sequence bottoms out empty, which means the state has no
+            fitted parameter at all rather than a parameter of zero.
+    """
+    while isinstance(value, (list, tuple)):
+        if not value:
+            raise ValueError("expected a fitted number, found an empty sequence")
+        value = value[0]
+    return float(value)
+
+
+def _as_lists(value: Any) -> Any:
+    """Plain Python lists, whatever array type the engine handed back.
+
+    Duck-typed rather than importing numpy: this module must stay importable
+    without the ``regimes`` extra, and ``tolist`` is the only thing needed.
+    """
+    return value.tolist() if hasattr(value, "tolist") else value
+
+
+def annualized_states(
+    means: Any,
+    covars: Any,
+    labels: Any,
+    *,
+    periods_per_year: int = PERIODS_PER_YEAR,
+) -> list[dict[str, Any]]:
+    """Per-state annualized mean return and volatility, in state order.
+
+    This is the *interpreted* form of a fit's parameters, and it is what every
+    reader downstream actually consumes: :mod:`~lazystats.regimes.tiers` ranks
+    on ``annualized_volatility``, and
+    :func:`~lazystats.regimes.window_comparison.compare_fits` reads both keys.
+    Persisting it, rather than the raw per-period ``means_``/``covars_``, is what
+    lets a stored fit be compared without re-deriving anything — and without
+    every reader having to know the engine's covariance nesting.
+
+    Args:
+        means: One per-period mean per state.
+        covars: One per-period variance per state, at any nesting depth.
+        labels: The engine's state labels; a state past the end of this list
+            falls back to its own index.
+        periods_per_year: Periods to annualise over.
+
+    Returns:
+        One record per state, carrying ``state``, ``label``,
+        ``annualized_mean_return`` and ``annualized_volatility``.
+
+    Raises:
+        ValueError: ``means`` and ``covars`` disagree on how many states there
+            are, which would pair a state's mean with another state's variance.
+    """
+    mean_rows = _as_lists(means)
+    covar_rows = _as_lists(covars)
+    label_list = list(_as_lists(labels) or [])
+
+    if len(mean_rows) != len(covar_rows):
+        raise ValueError(
+            f"{len(mean_rows)} means and {len(covar_rows)} variances: each state "
+            f"would be paired with another state's spread"
+        )
+
+    states: list[dict[str, Any]] = []
+    for index, (mean_row, covar_row) in enumerate(zip(mean_rows, covar_rows, strict=True)):
+        variance = _scalar(covar_row)
+        states.append({
+            "state": index,
+            "label": label_list[index] if index < len(label_list) else str(index),
+            "annualized_mean_return": _scalar(mean_row) * periods_per_year,
+            # A variance the optimiser drove marginally negative is a zero
+            # spread, not an imaginary one.
+            "annualized_volatility": math.sqrt(max(variance, 0.0) * periods_per_year),
+        })
+    return states
+
+
 def fit_symbol(
     instrument: str,
     *,
@@ -181,6 +272,11 @@ def fit_symbol(
             "data_end": dates[-1],
             "n_obs": len(dates),
             "labels": meta["labels"],
+            "periods_per_year": PERIODS_PER_YEAR,
+            # Without this a stored fit cannot be compared against another
+            # window's: the comparison ranks states by annualized volatility,
+            # and nothing else in the payload carries it.
+            "states": annualized_states(meta["means_"], meta["covars_"], meta["labels"]),
         },
     }
 
@@ -197,9 +293,11 @@ def is_production(market_db: str | Path, production_db: str | Path) -> bool:
 
 
 __all__ = [
+    "PERIODS_PER_YEAR",
     "PRODUCED_BY",
     "PROVENANCE_SOURCE",
     "SymbolReturns",
+    "annualized_states",
     "fit_symbol",
     "is_production",
     "symbol_returns",

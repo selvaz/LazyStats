@@ -7,12 +7,16 @@ below it need nothing and always run: they guard identities that already have
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from lazystats.regimes.estimation import (
+    PERIODS_PER_YEAR,
     PRODUCED_BY,
     PROVENANCE_SOURCE,
     SymbolReturns,
+    annualized_states,
     is_production,
     symbol_returns,
 )
@@ -109,3 +113,57 @@ class TestSymbolReturnsShape:
     def test_length_is_the_number_of_observations(self):
         r = SymbolReturns(symbol="GLD", dates=("2024-01-02",), values=(0.01,))
         assert len(r) == 1
+
+
+class TestAnnualizedStates:
+    """The interpreted form of a fit's parameters — and the only thing that
+    makes a stored fit comparable against another window's. Without it the
+    comparison has nothing to rank states by."""
+
+    def test_a_variance_becomes_an_annualized_volatility(self):
+        states = annualized_states([[0.0004]], [[[0.0001]]], ["calm"])
+        assert states[0]["annualized_volatility"] == pytest.approx(
+            math.sqrt(0.0001 * PERIODS_PER_YEAR))
+
+    def test_a_mean_is_scaled_not_compounded(self):
+        states = annualized_states([[0.0004]], [[[0.0001]]], ["calm"])
+        assert states[0]["annualized_mean_return"] == pytest.approx(
+            0.0004 * PERIODS_PER_YEAR)
+
+    def test_the_nesting_depth_of_a_variance_does_not_matter(self):
+        """A diagonal covariance reports [v], a full one [[v]]. Indexing at a
+        fixed depth would read a list as a float on one of the two."""
+        diagonal = annualized_states([[0.0]], [[0.0009]], ["calm"])
+        full = annualized_states([[0.0]], [[[0.0009]]], ["calm"])
+        assert diagonal[0]["annualized_volatility"] == full[0]["annualized_volatility"]
+
+    def test_a_marginally_negative_variance_is_a_zero_spread(self):
+        """The optimiser can land just below zero. A NaN volatility would sort
+        unpredictably and silently mis-rank the state."""
+        states = annualized_states([[0.0]], [[[-1e-18]]], ["calm"])
+        assert states[0]["annualized_volatility"] == 0.0
+
+    def test_states_keep_the_order_they_were_fitted_in(self):
+        states = annualized_states([[0.1], [0.2]], [[[0.01]], [[0.04]]], ["a", "b"])
+        assert [s["state"] for s in states] == [0, 1]
+        assert [s["label"] for s in states] == ["a", "b"]
+
+    def test_a_state_past_the_labels_falls_back_to_its_index(self):
+        states = annualized_states([[0.1], [0.2]], [[[0.01]], [[0.04]]], ["a"])
+        assert states[1]["label"] == "1"
+
+    def test_a_rate_other_than_daily_is_honoured(self):
+        weekly = annualized_states([[0.001]], [[[0.0004]]], ["calm"],
+                                   periods_per_year=52)
+        assert weekly[0]["annualized_volatility"] == pytest.approx(
+            math.sqrt(0.0004 * 52))
+
+    def test_mismatched_means_and_variances_are_refused(self):
+        """Zipping them would pair one state's mean with another's spread and
+        produce a plausible, wrong ranking."""
+        with pytest.raises(ValueError, match="another state's spread"):
+            annualized_states([[0.1], [0.2]], [[[0.01]]], ["a", "b"])
+
+    def test_an_empty_parameter_is_refused_rather_than_read_as_zero(self):
+        with pytest.raises(ValueError, match="empty sequence"):
+            annualized_states([[]], [[[0.01]]], ["a"])
