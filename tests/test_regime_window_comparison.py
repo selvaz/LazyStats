@@ -5,10 +5,18 @@ which side is the longer history, because the method must not know.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from lazystats.regimes.tiers import calm_or_highvol, tier_of, volatility_tiers
-from lazystats.regimes.window_comparison import WindowFit, compare_fits, summarise
+from lazystats.regimes.window_comparison import (
+    CLASSIFICATION_RULE,
+    WindowFit,
+    build_payload,
+    compare_fits,
+    summarise,
+)
 
 
 def state(index: int, vol: float, mean: float = 0.0) -> dict:
@@ -135,3 +143,60 @@ class TestSummary:
         ]
         assert summarise(results) == {"compared": 4, "agree": 1, "disagree": 1,
                                       "single_state": 1, "missing": 1}
+
+
+def payload(readings, **overrides) -> dict:
+    kwargs = {"comparison": "full_vs_eight", "baseline_window": "full",
+              "candidate_window": "8y", "as_of": "2026-08-13",
+              "periods_per_year": 252, "source": "lazystats.regimes.estimation"}
+    kwargs.update(overrides)
+    return build_payload(readings, **kwargs)
+
+
+class TestPayload:
+    """The record that gets stored and rendered. Pure: no depot is involved, so
+    its shape is checkable without one — which is the point of building it from
+    fits that arrive already loaded."""
+
+    def test_every_symbol_appears_with_its_verdict(self):
+        a = fit("full", current=0, states=CALM_THEN_WILD)
+        b = fit("8y", current=1, states=CALM_THEN_WILD)
+        out = payload([("GLD", a, b), ("SPY", a, a)])
+        assert [s["symbol"] for s in out["symbols"]] == ["GLD", "SPY"]
+        assert out["symbols"][0]["comparison"]["agreement"] == "disagree"
+        assert out["symbols"][1]["comparison"]["agreement"] == "agree"
+
+    def test_the_summary_counts_what_the_symbols_say(self):
+        a = fit("full", current=0, states=CALM_THEN_WILD)
+        b = fit("8y", current=1, states=CALM_THEN_WILD)
+        out = payload([("GLD", a, b), ("SPY", a, a), ("TLT", a, None)])
+        assert out["summary"] == {"compared": 3, "agree": 1, "disagree": 1,
+                                  "single_state": 0, "missing": 1}
+
+    def test_a_missing_side_is_recorded_rather_than_dropped(self):
+        """A symbol that vanishes from the report is indistinguishable from one
+        nobody asked about. The reason it could not be compared is the finding."""
+        out = payload([("TLT", None, fit("8y", current=0, states=CALM_THEN_WILD))])
+        entry = out["symbols"][0]["comparison"]
+        assert entry["status"] == "missing"
+        assert entry["baseline_available"] is False
+        assert entry["candidate_available"] is True
+
+    def test_the_provenance_states_the_rule_the_verdicts_used(self):
+        out = payload([])
+        assert out["provenance"]["classification_rule"] == CLASSIFICATION_RULE
+        assert out["provenance"]["periods_per_year"] == 252
+
+    def test_both_windows_are_named_by_the_preset(self):
+        out = payload([], baseline_window="three_years", candidate_window="ten_years")
+        assert out["baseline_window"] == "three_years"
+        assert out["candidate_window"] == "ten_years"
+        assert out["provenance"]["baseline_window"] == "three_years"
+        assert out["provenance"]["candidate_window"] == "ten_years"
+
+    def test_it_survives_a_round_trip_through_json(self):
+        """It is stored as JSON and re-rendered from JSON alone, so anything in
+        it that will not serialise is a report that cannot be reopened."""
+        a = fit("full", current=0, states=CALM_THEN_WILD)
+        out = payload([("GLD", a, a)])
+        assert json.loads(json.dumps(out)) == out
