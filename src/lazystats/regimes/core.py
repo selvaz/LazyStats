@@ -1584,6 +1584,7 @@ class MSRegimeEngine:
         reorder_by: Optional[OrderBy] = "vol",
         reorder_ascending: bool = True,
         random_state: int = 123,
+        standardize: bool = True,
     ):
         _validate_S_bounds(S_min, S_max)
         self.S_max = int(S_max)
@@ -1599,6 +1600,7 @@ class MSRegimeEngine:
         self.reorder_by = reorder_by
         self.reorder_ascending = bool(reorder_ascending)
         self.random_state = int(random_state)
+        self.standardize = bool(standardize)
 
     def fit(
         self,
@@ -1624,8 +1626,32 @@ class MSRegimeEngine:
 
         rng = np.random.RandomState(self.random_state)
 
+        # Panel mode: standardize each column (zero mean, unit variance)
+        # before fitting. hmmlearn's EM is numerically sensitive to Y's
+        # absolute scale -- jitter/min_covar/var_floor are all absolute-scale
+        # hyperparameters tuned for roughly unit variance, not the ~1e-4
+        # variance typical of raw daily log returns -- which is the likely
+        # cause of "Model is not converging" warnings on some symbols.
+        # State assignments/probabilities are exactly invariant to this
+        # affine rescaling (a Gaussian posterior's argmax and relative
+        # likelihoods are unchanged under an affine reparametrization), so
+        # fit in standardized units and de-standardize means_/covars_ (the
+        # only scale-dependent outputs) back to the original units below,
+        # per column, before they reach ``meta``. Joint/joint_full mode is
+        # deliberately left untouched -- de-standardizing a "full"
+        # covariance across differently-scaled columns needs a matrix
+        # (not scalar) transform, out of scope here.
+        standardize = self.standardize and fit_mode == "panel"
+        if standardize:
+            col_means = df.values.mean(axis=0)
+            col_stds = df.values.std(axis=0, ddof=1)
+            col_stds = np.where(np.isfinite(col_stds) & (col_stds > 0), col_stds, 1.0)
+            Y_fit = (df.values - col_means) / col_stds
+        else:
+            Y_fit = df.values
+
         out = fit_autos_Y(
-            Y=df.values,
+            Y=Y_fit,
             fit_mode=fit_mode,
             col_names=cols,
             S_max=self.S_max,
@@ -1651,10 +1677,23 @@ class MSRegimeEngine:
         idx = df.index
 
         if fit_mode == "panel":
-            for col in cols:
+            for j, col in enumerate(cols):
                 r = out["results"][col]
                 res = r["final_result"]
                 S = int(res.S)
+
+                # De-standardize means_/covars_ back to the column's own
+                # original units -- everything else (bic/loglik/startprob_/
+                # transmat_/state assignments/probabilities) is unaffected
+                # by the standardization (see the comment above where Y_fit
+                # is built), so only these two need the inverse transform.
+                if standardize:
+                    mean_j, std_j = col_means[j], col_stds[j]
+                    means_out = (res.means_ * std_j + mean_j).tolist()
+                    covars_out = (res.covars_ * (std_j ** 2)).tolist()
+                else:
+                    means_out = res.means_.tolist()
+                    covars_out = res.covars_.tolist()
 
                 value = pd.Series(df[col].values, index=idx, name=f"{col}_value")
                 state = pd.Series(r["state"], index=idx, name=f"{col}_state")
@@ -1675,8 +1714,8 @@ class MSRegimeEngine:
                     "loglik": float(res.loglik),
                     "startprob_": res.startprob_.tolist(),
                     "transmat_": res.transmat_.tolist(),
-                    "means_": res.means_.tolist(),
-                    "covars_": res.covars_.tolist(),
+                    "means_": means_out,
+                    "covars_": covars_out,
                 }
 
         else:  # joint (multivariate)
