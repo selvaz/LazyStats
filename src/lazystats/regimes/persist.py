@@ -27,6 +27,13 @@ from lazystats.regimes.vintage import select_rows
 #: needs to catch — sit at the front of that list.
 SCAN_LIMIT = 2000
 
+#: The keys that decide whether a reading *changed*. Only the discrete regime
+#: call: a probability shifts on every refit merely from one more day of data,
+#: so comparing the whole reading would report a retroactive revision for every
+#: date in the window, on every run, for every symbol. The full reading is still
+#: what gets stored.
+CHANGE_KEYS = ["state", "n_states", "is_high_vol"]
+
 
 @dataclass(frozen=True)
 class WriteOutcome:
@@ -38,6 +45,10 @@ class WriteOutcome:
         points_considered: How many readings the rules selected.
         reason: Why the diagnostics were written, replaced or skipped.
         selection_reason: Which rule chose the readings.
+        changed_dates: The trading dates whose reading actually changed, in
+            order. A report distinguishes a *revision* — an old date whose
+            regime call moved — from the newest date, which is simply new; that
+            needs the dates themselves, not how many there were.
     """
 
     result_id: str | None
@@ -45,6 +56,7 @@ class WriteOutcome:
     points_considered: int
     reason: str
     selection_reason: str
+    changed_dates: tuple[str, ...] = ()
 
 
 def find_todays_result(
@@ -140,7 +152,7 @@ def write_fit(
         retro_days=retro_days,
     )
 
-    written = 0
+    changed: list[str] = []
     for index in selection.indices:
         if depot.save_stable_point(
             series_key=series_key,
@@ -148,15 +160,17 @@ def write_fit(
             estimation_date=estimation_date,
             value=readings[index],
             result_id=result_id,
+            compare_keys=CHANGE_KEYS,
         ):
-            written += 1
+            changed.append(dates[index])
 
     return WriteOutcome(
         result_id=result_id,
-        points_written=written,
+        points_written=len(changed),
         points_considered=len(selection),
         reason=call.reason,
         selection_reason=selection.reason,
+        changed_dates=tuple(changed),
     )
 
 
@@ -219,5 +233,5 @@ def last_stored(depot: ResultDepot, series_key: str) -> tuple[str | None, int | 
     return latest.get("as_of_date"), states
 
 
-__all__ = ["SCAN_LIMIT", "WriteOutcome", "find_todays_result", "last_stored",
-           "write_failure", "write_fit"]
+__all__ = ["CHANGE_KEYS", "SCAN_LIMIT", "WriteOutcome", "find_todays_result",
+           "last_stored", "write_failure", "write_fit"]

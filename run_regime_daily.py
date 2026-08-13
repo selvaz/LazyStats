@@ -23,6 +23,7 @@ fitting an unstated universe is worse than one that refuses to start.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import sys
 from datetime import date, datetime, timedelta
@@ -34,7 +35,10 @@ from lazystats.io.depot import ResultDepot
 from lazystats.regimes.config import ConfigError, RegimeConfig, load_config
 from lazystats.regimes.estimation import fit_symbol
 from lazystats.regimes.persist import write_failure, write_fit
+from lazystats.regimes.report import Revision, SymbolReport
+from lazystats.regimes.report import render_html as render_report
 from lazystats.regimes.series import series_key
+from lazystats.regimes.tiers import tier_of, volatility_tiers
 
 
 def _window_start(as_of: date, lookback_years: int | None) -> str:
@@ -63,18 +67,109 @@ def _make_plan_run(cfg: RegimeConfig, *, window: str, as_of: date,
     return plan_run
 
 
-def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool):
-    """Fit each symbol and write it, one at a time.
+def _entry(cfg: RegimeConfig, fitted: dict, *, symbol: str,
+           revisions: tuple[Revision, ...], changed_today: bool) -> SymbolReport:
+    """One symbol's fit, as the report reads it."""
+    diagnostics = fitted["diagnostics"]
+    states = diagnostics.get("states") or []
+    latest = fitted["readings"][-1] if fitted["readings"] else {}
+    current = latest.get("state")
+    labels = diagnostics.get("labels") or []
+    chart = fitted.get("chart")
+
+    return SymbolReport(
+        symbol=symbol,
+        name=cfg.names.get(symbol),
+        n_states=int(diagnostics.get("n_states", 0)),
+        current_label=labels[current] if current is not None and current < len(labels)
+        else None,
+        current_tier=tier_of(
+            volatility_tiers([s["annualized_volatility"] for s in states]), current),
+        prob_high_vol=latest.get("prob_high_vol"),
+        changed_today=changed_today,
+        states=tuple(states),
+        transmat=tuple(tuple(row) for row in diagnostics.get("transmat") or ()),
+        bic=diagnostics.get("bic"),
+        loglik=diagnostics.get("loglik"),
+        chart=base64.b64decode(chart) if chart else None,
+        revisions=revisions,
+    )
+
+
+def _revisions_for(depot: ResultDepot, series_key: str,
+                   dates: tuple[str, ...]) -> tuple[Revision, ...]:
+    """The dates whose regime call moved, with what it moved from.
+
+    A revision is a date that had already been read once and now reads
+    differently — the model reconsidering the past, which is the whole reason
+    the readings are versioned rather than overwritten. A date being stored for
+    the first time is simply new, and has one vintage.
+
+    That prior vintage is the entire test. Its predecessor also excluded the
+    newest trading date, on the reasoning that the newest date always writes and
+    so cannot be a revision. That holds only while every run brings a new
+    trading day: on a holiday, or any day the market did not open, the newest
+    trading date is one already stored, and a genuine revision to it would have
+    been silently dropped. The vintage count says the same thing on every other
+    day and the right thing on that one.
+    """
+    revisions: list[Revision] = []
+    for trading_date in dates:
+        history = depot.list_series_vintages(series_key, trading_date)
+        if len(history) < 2:
+            continue
+        old, new = history[-2], history[-1]
+        revisions.append(Revision(
+            trading_date=trading_date,
+            old_state=int(old["value"]["state"]),
+            new_state=int(new["value"]["state"]),
+            old_prob_high_vol=old["value"].get("prob_high_vol"),
+            new_prob_high_vol=new["value"].get("prob_high_vol"),
+            old_estimation_date=old["estimation_date"],
+            new_estimation_date=new["estimation_date"],
+        ))
+    return tuple(revisions)
+
+
+def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
+                          report_path: Path | None, generated: str):
+    """Fit each symbol, write it, and assemble the report — one at a time.
 
     The prices live only inside this step, and only for one symbol at a time:
     the bundle that comes out carries an outcome per symbol, not a series.
+
+    The report is written **here**, rather than in a step of its own, and that
+    is not an accident of convenience. Its charts can only be drawn from the
+    fitted model, and a model neither survives a step boundary nor serialises;
+    passing ninety base64 images on to a later step would put megabytes through
+    a boundary meant for identifiers. So each chart is drawn as its model is
+    fitted, the model is released, and only the finished page's path leaves the
+    step.
     """
 
     def fit_and_persist(arg: str) -> dict:
         bundle = json.loads(arg)
-        depot = ResultDepot(depot_path)
         outcomes: list[dict] = []
+        entries: list[SymbolReport] = []
+        depot = ResultDepot(depot_path)
+        try:
+            _fit_all(bundle, depot, outcomes, entries)
+        finally:
+            depot.close()
 
+        bundle["outcomes"] = outcomes
+        if report_path is not None:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(
+                render_report(entries,
+                              as_of=datetime.strptime(bundle["as_of"], "%Y-%m-%d").date(),
+                              generated=generated, window=bundle["window"]),
+                encoding="utf-8")
+            bundle["report"] = str(report_path)
+        return bundle
+
+    def _fit_all(bundle: dict, depot: ResultDepot, outcomes: list[dict],
+                 entries: list[SymbolReport]) -> None:
         for symbol in bundle["symbols"]:
             key = series_key(
                 symbol,
@@ -90,6 +185,7 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool):
                     s_max=cfg.s_max,
                     n_starts=cfg.n_starts,
                     random_state=cfg.random_state,
+                    with_chart=report_path is not None,
                 )
             except Exception as exc:  # one symbol's failure must not end the run
                 message = f"{type(exc).__name__}: {exc}"
@@ -98,12 +194,16 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool):
                                   estimation_date=bundle["as_of"], error=message)
                 outcomes.append({"symbol": symbol, "series_key": key,
                                  "status": "error", "detail": message})
+                entries.append(SymbolReport(symbol=symbol, name=cfg.names.get(symbol),
+                                            error=message))
                 continue
 
             if dry_run:
                 outcomes.append({"symbol": symbol, "series_key": key, "status": "ok",
                                  "n_states": fitted["diagnostics"]["n_states"],
                                  "points_written": 0, "detail": "dry run: nothing written"})
+                entries.append(_entry(cfg, fitted, symbol=symbol, revisions=(),
+                                      changed_today=False))
                 continue
 
             written = write_fit(
@@ -123,8 +223,12 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool):
                 "detail": written.selection_reason,
             })
 
-        bundle["outcomes"] = outcomes
-        return bundle
+            newest = fitted["dates"][-1]
+            entries.append(_entry(
+                cfg, fitted, symbol=symbol,
+                revisions=_revisions_for(depot, key, written.changed_dates),
+                changed_today=newest in written.changed_dates,
+            ))
 
     return fit_and_persist
 
@@ -147,12 +251,14 @@ def summarise(arg: str) -> dict:
 
 
 def build_plan(cfg: RegimeConfig, *, window: str, as_of: date, market_db: str,
-               production_db: str, depot_path: str, dry_run: bool) -> Plan:
+               production_db: str, depot_path: str, dry_run: bool,
+               report_path: Path | None = None, generated: str = "") -> Plan:
     """The pipeline: resolve, fit and write, then count."""
     return Plan(
         Step(_make_plan_run(cfg, window=window, as_of=as_of, market_db=market_db,
                             production_db=production_db), name="plan_run"),
-        Step(_make_fit_and_persist(cfg, depot_path=depot_path, dry_run=dry_run),
+        Step(_make_fit_and_persist(cfg, depot_path=depot_path, dry_run=dry_run,
+                                   report_path=report_path, generated=generated),
              name="fit_and_persist"),
         Step(summarise, name="summarise"),
     )
@@ -176,7 +282,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--as-of", metavar="YYYY-MM-DD",
                    help="Estimation date (default: today).")
     p.add_argument("--dry-run", action="store_true",
-                   help="Fit and report, write nothing.")
+                   help="Fit and report, write nothing to the depot.")
+    p.add_argument("--report-dir", metavar="PATH",
+                   help="Write the daily HTML report, with a chart per symbol, "
+                        "into this directory. Omitted, no charts are drawn at "
+                        "all — which is most of the run's cost.")
     return p
 
 
@@ -196,6 +306,11 @@ def main() -> int:
     as_of = (datetime.strptime(args.as_of, "%Y-%m-%d").date() if args.as_of
              else datetime.now().date())
 
+    report_path = None
+    if args.report_dir:
+        report_path = (Path(args.report_dir)
+                       / f"hmm_regime_report_{as_of.strftime('%Y%m%d')}.html")
+
     plan = build_plan(
         cfg,
         window=args.window,
@@ -204,11 +319,15 @@ def main() -> int:
         production_db=args.production_db,
         depot_path=str(Path(args.depot)),
         dry_run=args.dry_run,
+        report_path=report_path,
+        generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
     agent = Agent(engine=plan, name="regime_daily")
-    result = agent(json.dumps({"as_of": as_of.isoformat()}))
+    bundle = json.loads(agent(json.dumps({"as_of": as_of.isoformat()})).text())
 
-    summary = json.loads(result.text())["summary"]
+    summary = bundle["summary"]
+    if bundle.get("report"):
+        summary["report"] = bundle["report"]
     print(json.dumps(summary, indent=2))
     return 1 if summary["failed"] else 0
 

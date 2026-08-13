@@ -25,7 +25,7 @@ fitting the wrong universe is worse than one that refuses to start.
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +74,10 @@ class RegimeConfig:
     n_starts: int
     random_state: int
     retro_days: int
+    #: Display names for the report, by symbol. A preset, like everything else
+    #: here: the method has no opinion about what "GLD" is called. Optional, and
+    #: a symbol without one is shown by its ticker alone.
+    names: dict[str, str] = field(default_factory=dict)
 
     def window(self, name: str) -> Window:
         for w in self.windows:
@@ -210,6 +214,25 @@ def _comparisons(raw: dict[str, Any], windows: tuple[Window, ...],
     return tuple(out)
 
 
+def _names(raw: dict[str, Any], instruments: tuple[str, ...],
+           path: Path) -> dict[str, str]:
+    table = raw.get("names", {})
+    if not isinstance(table, dict):
+        raise ConfigError(f"{path.name}: [names] must be a table")
+    for symbol, name in table.items():
+        if not isinstance(name, str) or not name.strip():
+            raise ConfigError(f"{path.name}: [names] {symbol!r} must be a non-empty string")
+        # A name for an instrument nobody fits is a typo that would otherwise do
+        # nothing at all: the report would simply show the ticker, and the
+        # preset would look applied.
+        if symbol not in instruments:
+            raise ConfigError(
+                f"{path.name}: [names] names {symbol!r}, which is not in "
+                f"'instruments'"
+            )
+    return dict(table)
+
+
 def load_config(path: str | Path) -> RegimeConfig:
     """Load and validate a regime run configuration.
 
@@ -231,8 +254,10 @@ def load_config(path: str | Path) -> RegimeConfig:
         raise ConfigError(f"{p.name}: not valid TOML: {exc}") from exc
 
     windows = _windows(raw, p)
+    instruments = _instruments(raw, p)
     return RegimeConfig(
-        instruments=_instruments(raw, p),
+        instruments=instruments,
+        names=_names(raw, instruments, p),
         windows=windows,
         comparisons=_comparisons(raw, windows, p),
         s_max=_positive_int(raw, "s_max", p),

@@ -210,6 +210,7 @@ def fit_symbol(
     s_max: int = 3,
     n_starts: int = 20,
     random_state: int = 123,
+    with_chart: bool = False,
 ) -> dict[str, Any]:
     """Fit a regime model to one symbol's daily returns.
 
@@ -224,11 +225,18 @@ def fit_symbol(
         s_max: Most states the search may consider.
         n_starts: Random initialisations per state count.
         random_state: Seed, so a rerun reproduces.
+        with_chart: Also draw the regime chart and return it base64-encoded.
+            Off by default: the image is two orders of magnitude larger than
+            everything else here, and only the daily report wants it. Drawing it
+            is possible only *here*, because it needs the fitted model, which
+            exists nowhere else — the caller receives a string it can pass on,
+            never the model.
 
     Returns:
         ``symbol``, the fitted ``diagnostics``, the trading ``dates`` and one
         ``readings`` entry per date. The shape
-        :func:`~lazystats.regimes.persist.write_fit` expects.
+        :func:`~lazystats.regimes.persist.write_fit` expects. ``chart`` carries
+        the base64 PNG when asked for, and is ``None`` otherwise.
 
     Raises:
         ValueError: The symbol has no usable returns over the window.
@@ -254,14 +262,27 @@ def fit_symbol(
     panel = run.panel
     states = panel[f"{returns.symbol}_state"].astype(int).tolist()
     high_vol = panel[f"{returns.symbol}_highvol"].astype(bool).tolist()
+    # The probability of being in the turbulent state. Continuous, so it is
+    # stored but never compared — see persist.CHANGE_KEYS.
+    prob_high_vol = panel[f"P_{returns.symbol}_HV"].astype(float).tolist()
     dates = [str(d.date()) for d in panel.index]
+
+    chart: str | None = None
+    if with_chart:
+        import base64
+
+        from lazystats.regimes.charts import chart_png
+
+        chart = base64.b64encode(chart_png(run, returns.symbol)).decode("ascii")
 
     return {
         "symbol": returns.symbol,
+        "chart": chart,
         "dates": dates,
         "readings": [
-            {"state": s, "n_states": n_states, "is_high_vol": bool(h)}
-            for s, h in zip(states, high_vol, strict=True)
+            {"state": s, "n_states": n_states, "is_high_vol": bool(h),
+             "prob_high_vol": float(p)}
+            for s, h, p in zip(states, high_vol, prob_high_vol, strict=True)
         ],
         "diagnostics": {
             "n_states": n_states,
@@ -272,6 +293,7 @@ def fit_symbol(
             "data_end": dates[-1],
             "n_obs": len(dates),
             "labels": meta["labels"],
+            "transmat": _as_lists(meta["transmat_"]),
             "periods_per_year": PERIODS_PER_YEAR,
             # Without this a stored fit cannot be compared against another
             # window's: the comparison ranks states by annualized volatility,

@@ -188,3 +188,60 @@ class TestVariantsStaySeparate:
                   readings=[reading(0)] * 5, retro_days=0)
         assert last_stored(depot, "regime:ticker:GLD") == (None, None)
         assert last_stored(depot, "regime:GLD")[0] == "2026-08-05"
+
+
+class TestWhatCountsAsAChange:
+    """A reading carries both the discrete regime call and a probability. Only
+    the first decides whether the reading changed: the second moves on every
+    refit merely from one more day of data."""
+
+    def test_a_moved_probability_alone_is_not_a_revision(self):
+        """The trap this guards: comparing the whole reading would report a
+        retroactive revision for every date in the window, on every run, for
+        every symbol — burying the real ones."""
+        depot = ResultDepot(":memory:")
+        base = [{"state": 0, "n_states": 2, "is_high_vol": False,
+                 "prob_high_vol": 0.11}] * len(DATES)
+        write_fit(depot, symbol="GLD", series_key=KEY, estimation_date="2026-08-05",
+                  diagnostics=diagnostics(), dates=DATES, readings=base, retro_days=0)
+
+        drifted = [{"state": 0, "n_states": 2, "is_high_vol": False,
+                    "prob_high_vol": 0.4287} for _ in DATES]
+        out = write_fit(depot, symbol="GLD", series_key=KEY,
+                        estimation_date="2026-08-06", diagnostics=diagnostics(),
+                        dates=DATES, readings=drifted, retro_days=len(DATES))
+        assert out.points_written == 0
+        assert out.changed_dates == ()
+
+    def test_a_moved_state_is_a_revision_and_is_named(self):
+        depot = ResultDepot(":memory:")
+        calm = [{"state": 0, "n_states": 2, "is_high_vol": False,
+                 "prob_high_vol": 0.11}] * len(DATES)
+        write_fit(depot, symbol="GLD", series_key=KEY, estimation_date="2026-08-05",
+                  diagnostics=diagnostics(), dates=DATES, readings=calm, retro_days=0)
+
+        revised = list(calm)
+        revised[1] = {"state": 1, "n_states": 2, "is_high_vol": True,
+                      "prob_high_vol": 0.93}
+        out = write_fit(depot, symbol="GLD", series_key=KEY,
+                        estimation_date="2026-08-06", diagnostics=diagnostics(),
+                        dates=DATES, readings=revised, retro_days=len(DATES))
+        assert out.changed_dates == (DATES[1],)
+        assert out.points_written == 1
+
+    def test_the_probability_is_stored_even_though_it_is_not_compared(self):
+        """Not compared is not the same as not kept: the report prints it."""
+        depot = ResultDepot(":memory:")
+        write_fit(depot, symbol="GLD", series_key=KEY, estimation_date="2026-08-05",
+                  diagnostics=diagnostics(), dates=DATES,
+                  readings=[{"state": 0, "n_states": 2, "is_high_vol": False,
+                             "prob_high_vol": 0.1234}] * len(DATES),
+                  retro_days=0)
+        assert depot.get_series_latest(KEY)[-1]["value"]["prob_high_vol"] == 0.1234
+
+    def test_every_date_a_first_run_wrote_is_named(self):
+        depot = ResultDepot(":memory:")
+        out = write_fit(depot, symbol="GLD", series_key=KEY,
+                        estimation_date="2026-08-05", diagnostics=diagnostics(),
+                        dates=DATES, readings=[reading(0)] * len(DATES), retro_days=0)
+        assert list(out.changed_dates) == DATES

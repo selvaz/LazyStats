@@ -180,3 +180,25 @@ class TestShippedExample:
         assert cfg.instruments
         assert cfg.window("full").variant is None
         assert cfg.comparisons
+
+
+class TestDisplayNames:
+    """Names are a preset, like the universe: the method has no opinion about
+    what 'GLD' is called. They live here so the public package carries none."""
+
+    def test_names_are_optional(self, tmp_path):
+        assert load_config(write(tmp_path, VALID)).names == {}
+
+    def test_a_name_is_read_for_a_declared_instrument(self, tmp_path):
+        cfg = load_config(write(tmp_path, VALID + '\n[names]\nSPY = "S&P 500 ETF"\n'))
+        assert cfg.names["SPY"] == "S&P 500 ETF"
+
+    def test_a_name_for_an_unfitted_instrument_is_refused(self, tmp_path):
+        """Otherwise the typo does nothing at all: the report shows the ticker
+        and the preset looks applied."""
+        with pytest.raises(ConfigError, match="not in 'instruments'"):
+            load_config(write(tmp_path, VALID + '\n[names]\nNOPE = "Nothing"\n'))
+
+    def test_an_empty_name_is_refused(self, tmp_path):
+        with pytest.raises(ConfigError, match="non-empty string"):
+            load_config(write(tmp_path, VALID + '\n[names]\nSPY = ""\n'))

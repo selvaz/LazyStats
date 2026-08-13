@@ -24,6 +24,23 @@ random_state = 123
 # window in which such a revision is looked for and recorded.
 retro_days = 30
 
+# ------------------------------------------------------------------ names
+#
+# Optional display names for the daily report. A preset like everything else
+# here: the method has no opinion about what "GLD" is called, and a symbol
+# without a name is shown by its ticker alone. Naming a symbol that is not in
+# `instruments` is refused rather than ignored -- otherwise the typo would do
+# nothing at all and the preset would look applied.
+#
+# This table sits below every top-level key above on purpose: in TOML a bare key
+# after a table header belongs to that table, so `s_max` written below here
+# would quietly become one of the names.
+
+[names]
+SPY = "S&P 500 ETF"
+TLT = "20+ Year Treasury Bond ETF"
+GLD = "Gold Trust"
+
 # ---------------------------------------------------------------- windows
 #
 # Each window is one way of estimating the same symbol. A window with no
