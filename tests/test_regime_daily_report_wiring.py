@@ -13,6 +13,9 @@ dropped on any day the market did not open.
 from __future__ import annotations
 
 import importlib.util
+import sys
+import types
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -213,3 +216,113 @@ class TestTheRunRecordCarriesTheFullReading:
                               revisions=(), changed_today=False)
         assert (entry.data_start, entry.data_end) == (DATES[0], DATES[-1])
         assert entry.n_obs == len(DATES)
+
+
+class TestTelegramDelivery:
+    """The daily report goes out. Its predecessor attached it every day -- the
+    legacy log carries fifteen 'Sent Telegram summary + report attachment'
+    lines -- and the ported runner shipped without the flag, so the report was
+    written and never delivered. Nothing failed: that is the shape of it.
+    """
+
+    def test_the_flag_exists_and_is_off_by_default(self):
+        runner = load_runner()
+        args = runner.build_parser().parse_args([
+            "--config", "c.toml", "--window", "full", "--depot", "d",
+            "--market-db", "m", "--production-db", "m"])
+        assert args.send is False
+
+    def test_without_the_flag_nothing_is_delivered(self, tmp_path):
+        runner = load_runner()
+        report = tmp_path / "r.html"
+        report.write_text("x", encoding="utf-8")
+        assert runner.delivery(False, False, report) == (False, "")
+
+    def test_the_flag_with_a_report_delivers(self, tmp_path):
+        runner = load_runner()
+        report = tmp_path / "r.html"
+        report.write_text("x", encoding="utf-8")
+        assert runner.delivery(True, False, report) == (True, "")
+
+    def test_sending_without_a_report_directory_refuses(self, tmp_path):
+        """--send with nothing to attach is a request that cannot be honoured.
+        Reporting success would claim a delivery that never happened."""
+        runner = load_runner()
+        deliver, reason = runner.delivery(True, False, None)
+        assert deliver is False
+        assert "--report-dir" in reason
+
+    def test_a_report_that_was_never_written_refuses_too(self, tmp_path):
+        runner = load_runner()
+        deliver, reason = runner.delivery(True, False, tmp_path / "absent.html")
+        assert deliver is False and "--report-dir" in reason
+
+    def test_a_dry_run_sends_nothing_and_is_not_an_error(self, tmp_path):
+        """--dry-run writes nothing to the depot; delivering its report would
+        publish a run that officially did not happen."""
+        runner = load_runner()
+        report = tmp_path / "r.html"
+        report.write_text("x", encoding="utf-8")
+        deliver, reason = runner.delivery(True, True, report)
+        assert deliver is False
+        assert not reason.startswith("--send")
+
+    def test_an_unconfigured_telegram_is_reported_not_swallowed(self, tmp_path,
+                                                               monkeypatch, capsys):
+        runner = load_runner()
+        monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+        monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+        report = tmp_path / "hmm_regime_report_20260814.html"
+        report.write_text("<html></html>", encoding="utf-8")
+        code = runner.send_telegram(report, {"symbols": 1, "fitted": 1, "failed": 0,
+                                             "points_written": 0},
+                                    window="full", as_of=date(2026, 8, 14))
+        assert code == 2
+        assert "TELEGRAM_BOT_TOKEN" in capsys.readouterr().err
+
+    def test_it_attaches_the_chart_report_and_says_what_ran(self, tmp_path,
+                                                            monkeypatch, capsys):
+        """The chart report is what the predecessor attached. The browsable one
+        stays on disk and in the depot, where it can be reopened."""
+        runner = load_runner()
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+        report = tmp_path / "hmm_regime_report_20260814.html"
+        report.write_bytes(b"<html>chart</html>")
+
+        sent = {}
+
+        class FakeClient:
+            @classmethod
+            def from_token(cls, token):
+                sent["token"] = token
+                return cls()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def send_message(self, *, chat_id, text):
+                sent["text"] = text
+
+            def send_document(self, *, chat_id, document, filename, caption):
+                sent["document"] = document
+                sent["filename"] = filename
+
+        module = types.ModuleType("lazytools.connectors.telegram")
+        module.TelegramClient = FakeClient
+        package = types.ModuleType("lazytools")
+        connectors = types.ModuleType("lazytools.connectors")
+        monkeypatch.setitem(sys.modules, "lazytools", package)
+        monkeypatch.setitem(sys.modules, "lazytools.connectors", connectors)
+        monkeypatch.setitem(sys.modules, "lazytools.connectors.telegram", module)
+
+        code = runner.send_telegram(report, {"symbols": 109, "fitted": 109,
+                                             "failed": 0, "points_written": 4816},
+                                    window="full", as_of=date(2026, 8, 14))
+        assert code == 0
+        assert sent["document"] == b"<html>chart</html>"
+        assert sent["filename"] == "hmm_regime_report_20260814.html"
+        assert "109" in sent["text"] and "2026-08-14" in sent["text"]
