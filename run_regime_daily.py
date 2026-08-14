@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -347,6 +348,59 @@ def write_daily_report(bundle: dict, *, depot_path: str, out_dir: Path) -> Path:
     return out_path
 
 
+def delivery(send: bool, dry_run: bool, report: Path | None) -> tuple[bool, str]:
+    """Whether this run delivers, and why not when it does not.
+
+    A separate decision from the delivering, so it can be checked without a
+    fit: the run that reaches it has already loaded a hundred symbols of
+    prices, which is not a price worth paying to find out that --send was
+    passed without --report-dir.
+
+    Returns ``(deliver, reason)``. ``reason`` is empty when delivering.
+    """
+    if not send:
+        return False, ""
+    if dry_run:
+        return False, "dry run: nothing sent"
+    if report is None or not report.is_file():
+        return False, "--send needs --report-dir: no chart report was written."
+    return True, ""
+
+
+def send_telegram(report: Path, summary: dict, *, window: str, as_of: date) -> int:
+    """Deliver the day's regime report, or say precisely why it could not be.
+
+    Imported here rather than at module scope: ``lazytools`` is not a dependency
+    of this repository, and a run that does not ask for delivery must not need
+    it installed.
+
+    The chart report is what goes out, because that is what its predecessor
+    attached every day. The browsable one stays on disk and in the depot, where
+    it can be reopened without refitting.
+    """
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        print("Telegram not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.",
+              file=sys.stderr)
+        return 2
+
+    from lazytools.connectors.telegram import TelegramClient
+
+    text = (
+        f"HMM regime monitor — {as_of.isoformat()} (window '{window}')\n"
+        f"{summary['symbols']} symbols, {summary['fitted']} fitted, "
+        f"{summary['failed']} failed\n"
+        f"{summary['points_written']} readings written"
+    )
+    with TelegramClient.from_token(token) as client:
+        client.send_message(chat_id=chat_id, text=text)
+        client.send_document(chat_id=chat_id, document=report.read_bytes(),
+                             filename=report.name, caption="HMM regime report (charts)")
+    print("Sent Telegram summary and report.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -366,6 +420,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Estimation date (default: today).")
     p.add_argument("--dry-run", action="store_true",
                    help="Fit and report, write nothing to the depot.")
+    p.add_argument("--send", action="store_true",
+                   help="Send the summary and the chart report to Telegram. Needs "
+                        "--report-dir: there is nothing to attach otherwise.")
     p.add_argument("--report-dir", metavar="PATH",
                    help="Write both daily reports into this directory: the "
                         "chart-based one, and the browsable one rendered from "
@@ -417,6 +474,17 @@ def main() -> int:
         summary["daily_report"] = str(write_daily_report(
             bundle, depot_path=str(Path(args.depot)), out_dir=Path(args.report_dir)))
     print(json.dumps(summary, indent=2))
+
+    deliver, reason = delivery(args.send, args.dry_run, report_path)
+    if deliver:
+        assert report_path is not None
+        code = send_telegram(report_path, summary, window=args.window, as_of=as_of)
+        if code:
+            return code
+    elif reason.startswith("--send"):
+        print(reason, file=sys.stderr)
+        return 2
+
     return 1 if summary["failed"] else 0
 
 
