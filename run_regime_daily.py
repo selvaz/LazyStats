@@ -367,6 +367,39 @@ def delivery(send: bool, dry_run: bool, report: Path | None) -> tuple[bool, str]
     return True, ""
 
 
+class PlanFailure(RuntimeError):
+    """The plan came back without the run's result."""
+
+
+def decode_bundle(raw: str) -> dict:
+    """Read the plan's answer, or say what arrived instead of it.
+
+    ``Agent`` returns rather than raises when a step gives up, so the run gets
+    here holding an empty string and ``json.loads`` calls that ``Expecting
+    value: line 1 column 1``. That names the parser, not the cause, and it is
+    the entire content of the failure: on 14 August the eight-year fit stopped
+    after 48 of 109 instruments and the log held nothing else -- no symbol, no
+    step, no reason.
+
+    This cannot recover the cause, which the plan did not report. It can stop
+    the run from claiming the cause is malformed JSON, and say how far the fit
+    got before it stopped.
+    """
+    if not raw.strip():
+        raise PlanFailure(
+            "the plan returned nothing: a step gave up without reporting why. "
+            "Whatever it had already written to the depot is still there; the "
+            "run is incomplete, not undone."
+        )
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise PlanFailure(
+            f"the plan returned something that is not the run's result ({exc}). "
+            f"It said: {raw[:500]!r}"
+        ) from exc
+
+
 def send_telegram(report: Path, summary: dict, *, window: str, as_of: date) -> int:
     """Deliver the day's regime report, or say precisely why it could not be.
 
@@ -465,7 +498,11 @@ def main() -> int:
         generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
     agent = Agent(engine=plan, name="regime_daily")
-    bundle = json.loads(agent(json.dumps({"as_of": as_of.isoformat()})).text())
+    try:
+        bundle = decode_bundle(agent(json.dumps({"as_of": as_of.isoformat()})).text())
+    except PlanFailure as exc:
+        print(f"plan: {exc}", file=sys.stderr)
+        return 3
 
     summary = bundle["summary"]
     if bundle.get("report"):

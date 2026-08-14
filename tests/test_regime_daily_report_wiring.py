@@ -326,3 +326,41 @@ class TestTelegramDelivery:
         assert sent["document"] == b"<html>chart</html>"
         assert sent["filename"] == "hmm_regime_report_20260814.html"
         assert "109" in sent["text"] and "2026-08-14" in sent["text"]
+
+
+# --------------------------------------------------------------------- #
+# What the plan hands back, when it hands back nothing useful.
+#
+# `Agent` returns instead of raising when a step gives up, so the runner
+# reaches `json.loads` with an empty string and the run dies reporting
+# `Expecting value: line 1 column 1` -- the parser's complaint, not the
+# cause. On 14 August the eight-year fit stopped after 48 of 109 instruments
+# and that line was the whole of what the log held: no symbol, no step, no
+# reason. These check that the runner now says which of the two happened.
+# --------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "\n\t "])
+def test_an_empty_answer_is_reported_as_the_plan_giving_up(raw):
+    runner = load_runner()
+    with pytest.raises(runner.PlanFailure) as caught:
+        runner.decode_bundle(raw)
+    message = str(caught.value)
+    assert "returned nothing" in message
+    # The depot keeps what was written before the stop; a run that says
+    # otherwise sends someone looking for corruption that is not there.
+    assert "still there" in message
+
+
+def test_a_non_json_answer_is_quoted_back():
+    runner = load_runner()
+    with pytest.raises(runner.PlanFailure) as caught:
+        runner.decode_bundle("Traceback (most recent call last): ...")
+    message = str(caught.value)
+    assert "not the run's result" in message
+    assert "Traceback" in message, "the answer itself is the evidence; it must survive"
+
+
+def test_a_real_answer_is_returned_unchanged():
+    runner = load_runner()
+    assert runner.decode_bundle('{"summary": {"failed": 0}}') == {"summary": {"failed": 0}}
