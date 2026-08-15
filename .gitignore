@@ -14,7 +14,11 @@ build/
 # status` non e' mai pulito, e uno `status` mai pulito e' uno status che
 # nessuno legge: e' cosi' che 28 file non committati sono passati inosservati
 # in un altro repository dell'ecosistema.
-.coverage
-.tmp/
-logs/
-reports/
+#
+# Ancorati alla radice con `/`: senza, `reports/` corrisponderebbe anche a un
+# futuro `src/lazystats/reports/`, e un sorgente ignorato in silenzio e' un
+# prezzo molto piu' alto di uno status sporco.
+/.coverage
+/.tmp/
+/logs/
+/reports/
