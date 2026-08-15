@@ -367,6 +367,21 @@ def delivery(send: bool, dry_run: bool, report: Path | None) -> tuple[bool, str]
     return True, ""
 
 
+def plan_error(envelope) -> str | None:
+    """What the plan reported as its failure, or ``None`` when it reported none.
+
+    A separate function because the mistake it prevents is not a formatting
+    one: the field simply was not read. ``Agent`` hands back an ``Envelope``
+    and a failed step sets ``error`` on it, with a type and a message. Both
+    this runner and the guard added after 14 August went straight to
+    ``.text()``, saw an empty payload, and reported that the plan had given no
+    reason -- while the reason sat unread on the object they were holding.
+    """
+    if envelope.error is None:
+        return None
+    return f"{envelope.error.type}: {envelope.error.message}"
+
+
 class PlanFailure(RuntimeError):
     """The plan came back without the run's result."""
 
@@ -374,16 +389,16 @@ class PlanFailure(RuntimeError):
 def decode_bundle(raw: str) -> dict:
     """Read the plan's answer, or say what arrived instead of it.
 
-    ``Agent`` returns rather than raises when a step gives up, so the run gets
-    here holding an empty string and ``json.loads`` calls that ``Expecting
-    value: line 1 column 1``. That names the parser, not the cause, and it is
-    the entire content of the failure: on 14 August the eight-year fit stopped
-    after 48 of 109 instruments and the log held nothing else -- no symbol, no
-    step, no reason.
+    The last line of defence, and only that. The cause of a failed step is on
+    the envelope, in ``error.message``, and the caller reports it before
+    reaching here -- an earlier version of this guard said the plan "gave up
+    without reporting why", which was wrong. It had reported why; nobody was
+    reading the field.
 
-    This cannot recover the cause, which the plan did not report. It can stop
-    the run from claiming the cause is malformed JSON, and say how far the fit
-    got before it stopped.
+    What is left for this function is the case the envelope does not describe:
+    no error set, and nothing usable in the payload either. Without it
+    ``json.loads`` calls that ``Expecting value: line 1 column 1``, which names
+    the parser rather than the fault.
     """
     if not raw.strip():
         raise PlanFailure(
@@ -498,9 +513,25 @@ def main() -> int:
         generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
     agent = Agent(engine=plan, name="regime_daily")
+    # The envelope carries the failure; `.text()` throws it away.
+    #
+    # `Agent` returns an `Envelope`, and a step that gives up sets `error` on it
+    # with a type and a message. Going straight to `.text()` -- as this did, and
+    # as the guard that replaced it still did -- reads the empty payload and
+    # never looks at the field holding the reason. `run_daily_etf_stats.py` has
+    # read it all along. This did not, which is why 14 August cost an afternoon
+    # and still ended at "the plan gave up without reporting why". It had
+    # reported why.
+    envelope = agent(json.dumps({"as_of": as_of.isoformat()}))
+    reported = plan_error(envelope)
+    if reported is not None:
+        print(f"plan: {reported}", file=sys.stderr)
+        return 3
     try:
-        bundle = decode_bundle(agent(json.dumps({"as_of": as_of.isoformat()})).text())
+        bundle = decode_bundle(envelope.text())
     except PlanFailure as exc:
+        # Still reachable, and a different fault: an envelope that reports no
+        # error and carries nothing usable anyway.
         print(f"plan: {exc}", file=sys.stderr)
         return 3
 
