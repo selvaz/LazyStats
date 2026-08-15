@@ -364,3 +364,70 @@ def test_a_non_json_answer_is_quoted_back():
 def test_a_real_answer_is_returned_unchanged():
     runner = load_runner()
     assert runner.decode_bundle('{"summary": {"failed": 0}}') == {"summary": {"failed": 0}}
+
+
+# --------------------------------------------------------------------- #
+# The failure the plan did report.
+#
+# `Agent` hands back an `Envelope`; a step that gives up sets `error` on it.
+# This runner went straight to `.text()`, and so did the guard added after
+# 14 August -- both saw an empty payload and concluded the plan had given no
+# reason, while the reason sat unread on the object they were holding. The
+# ETF runner has read that field all along.
+# --------------------------------------------------------------------- #
+
+
+class _Error:
+    def __init__(self, type_, message):
+        self.type, self.message = type_, message
+
+
+class _Envelope:
+    def __init__(self, error=None, text=""):
+        self.error, self._text = error, text
+
+    def text(self):
+        return self._text
+
+
+def test_a_reported_failure_is_carried_out_of_the_envelope():
+    runner = load_runner()
+    reported = runner.plan_error(_Envelope(_Error("StepError", "fit_symbol: IBCL.DE ran out of memory")))
+    assert reported is not None
+    assert "StepError" in reported, "the kind of failure is dropped"
+    assert "IBCL.DE" in reported, "the message is dropped, which is the whole point"
+
+
+def test_an_envelope_without_an_error_reports_nothing():
+    runner = load_runner()
+    assert runner.plan_error(_Envelope(None, '{"summary": {}}')) is None
+
+
+def test_the_error_is_read_before_the_payload():
+    """Order, from the syntax tree: `.text()` after the check, never before.
+
+    Reading the payload first is not merely redundant -- it is how this was
+    wrong twice. An empty payload produces a confident, generic message that
+    stops anyone looking for the real one.
+    """
+    import ast
+
+    source = RUNNER.read_text(encoding="utf-8")
+    main = next(node for node in ast.parse(source).body
+                if isinstance(node, ast.FunctionDef) and node.name == "main")
+    calls = [
+        node.lineno for node in ast.walk(main)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "plan_error"
+    ]
+    texts = [
+        node.lineno for node in ast.walk(main)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "text"
+    ]
+    assert calls, "main() never asks the envelope whether the plan failed"
+    assert texts, "main() never reads the payload"
+    assert min(calls) < min(texts), (
+        "the payload is read before the error is checked, which is how an "
+        "empty payload came to speak for a failure that had a message"
+    )
