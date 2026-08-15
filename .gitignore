@@ -7,3 +7,14 @@ __pycache__/
 dist/
 build/
 .venv/
+
+# Artefatti di esecuzione. Questo repository e' anche la radice da cui i job
+# girano nelle worktree congelate (`LazyStats-runtime-*`), quindi ogni corsa vi
+# lascia log, report e file temporanei. Non ignorarli significa che `git
+# status` non e' mai pulito, e uno `status` mai pulito e' uno status che
+# nessuno legge: e' cosi' che 28 file non committati sono passati inosservati
+# in un altro repository dell'ecosistema.
+.coverage
+.tmp/
+logs/
+reports/
