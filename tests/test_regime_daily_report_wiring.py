@@ -392,7 +392,8 @@ class _Envelope:
 
 def test_a_reported_failure_is_carried_out_of_the_envelope():
     runner = load_runner()
-    reported = runner.plan_error(_Envelope(_Error("StepError", "fit_symbol: IBCL.DE ran out of memory")))
+    failure = _Error("StepError", "fit_symbol: IBCL.DE ran out of memory")
+    reported = runner.plan_error(_Envelope(failure))
     assert reported is not None
     assert "StepError" in reported, "the kind of failure is dropped"
     assert "IBCL.DE" in reported, "the message is dropped, which is the whole point"
