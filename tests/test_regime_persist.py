@@ -245,3 +245,66 @@ class TestWhatCountsAsAChange:
                         estimation_date="2026-08-05", diagnostics=diagnostics(),
                         dates=DATES, readings=[reading(0)] * len(DATES), retro_days=0)
         assert list(out.changed_dates) == DATES
+
+
+# ---------------------------------------------------------------------------
+# "changed today" has to mean the regime moved, not that a point was written.
+# Observed in production on 2026-08-16: the report flagged 109 of 109
+# instruments as changed while the depot held five real state changes.
+# ---------------------------------------------------------------------------
+
+
+def _lettura(state, n_states=3, is_high_vol=False, prob=0.1):
+    return {"state": state, "n_states": n_states, "is_high_vol": is_high_vol,
+            "prob_high_vol": prob, "state_probs": [0.5, 0.4, 0.1]}
+
+
+def test_regime_changed_compares_the_call_not_the_probabilities():
+    from lazystats.regimes.persist import regime_changed
+
+    assert regime_changed(_lettura(1), _lettura(0)) is True
+    assert regime_changed(_lettura(1), _lettura(1)) is False
+    # a probability moves on every refit from one more day of data; on its own
+    # it is not a regime change, and treating it as one would flag everything
+    assert regime_changed(_lettura(1, prob=0.10), _lettura(1, prob=0.93)) is False
+    # the other two keys do count
+    assert regime_changed(_lettura(1, n_states=3), _lettura(1, n_states=2)) is True
+    assert regime_changed(_lettura(1, is_high_vol=False),
+                          _lettura(1, is_high_vol=True)) is True
+
+
+def test_a_series_with_one_reading_has_not_changed():
+    """Nothing to compare against is not a change. It used to be one, because
+    the newest date is always newly written."""
+    from lazystats.regimes.persist import regime_changed
+
+    assert regime_changed(None, _lettura(0)) is False
+
+
+def test_a_written_point_is_not_by_itself_a_regime_change(tmp_path):
+    """The defect, end to end.
+
+    `write_fit` reports `changed_dates` -- the dates a point was written for --
+    and the store writes whenever it holds nothing for that date yet. On the
+    newest trading date that is true every single day, so reading
+    `newest in changed_dates` as "the regime changed" flagged every instrument
+    on every run.
+    """
+    from lazystats.io.depot import ResultDepot
+    from lazystats.regimes.persist import regime_changed, write_fit
+
+    depot = ResultDepot(str(tmp_path / "d.sqlite"))
+    dates = ["2026-08-13", "2026-08-14"]
+    readings = [_lettura(1), _lettura(1)]        # stesso stato: NON e' un cambio
+
+    written = write_fit(
+        depot, symbol="AAA", series_key="regime:AAA",
+        estimation_date="2026-08-14",
+        diagnostics={"n_states": 3}, dates=dates, readings=readings,
+        retro_days=5,
+    )
+
+    # il punto piu' recente e' stato scritto -- e' un giorno nuovo
+    assert dates[-1] in written.changed_dates
+    # ma il regime non si e' mosso, ed e' questo che il report deve dire
+    assert regime_changed(readings[-2], readings[-1]) is False

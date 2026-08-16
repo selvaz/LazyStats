@@ -35,6 +35,23 @@ SCAN_LIMIT = 2000
 CHANGE_KEYS = ["state", "n_states", "is_high_vol"]
 
 
+def regime_changed(previous, current) -> bool:
+    """Did the regime call move between two consecutive readings?
+
+    Compared on :data:`CHANGE_KEYS`, the same keys the store uses to decide a
+    reading changed, so "the regime moved" cannot come to mean one thing in the
+    report and another in the database.
+
+    This is a comparison *between two dates*, which is what a reader means by a
+    regime change. It is deliberately not the same question as "was a point
+    written": a point is written whenever the store has nothing for that date
+    yet, which on the newest trading date is true every single day.
+    """
+    if previous is None or current is None:
+        return False
+    return any(previous.get(k) != current.get(k) for k in CHANGE_KEYS)
+
+
 @dataclass(frozen=True)
 class WriteOutcome:
     """What a write actually did.
@@ -234,4 +251,5 @@ def last_stored(depot: ResultDepot, series_key: str) -> tuple[str | None, int | 
 
 
 __all__ = ["CHANGE_KEYS", "SCAN_LIMIT", "WriteOutcome", "find_todays_result",
+           "regime_changed",
            "last_stored", "write_failure", "write_fit"]
