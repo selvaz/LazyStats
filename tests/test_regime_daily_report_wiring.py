@@ -432,3 +432,29 @@ def test_the_error_is_read_before_the_payload():
         "the payload is read before the error is checked, which is how an "
         "empty payload came to speak for a failure that had a message"
     )
+
+
+def test_the_runner_derives_changed_today_from_two_readings_not_from_the_write():
+    """Structural, because the alternative is a full fit against a database.
+
+    The call site is the whole defect: `changed_today=newest in
+    written.changed_dates` was true for every instrument on every run, since
+    the store writes whenever it has nothing for that date yet. Reported as
+    109 of 109 changed on 2026-08-16, against five real changes in the depot.
+    """
+    import ast
+    import pathlib
+
+    fonte = (pathlib.Path(__file__).resolve().parents[1] / "run_regime_daily.py").read_text(
+        encoding="utf-8")
+    assert "newest in written.changed_dates" not in fonte, \
+        "changed_today torna a significare 'un punto e' stato scritto'"
+    assert "regime_changed(" in fonte, "il runner non confronta piu' due letture"
+
+    albero = ast.parse(fonte)
+    chiamate = {ast.unparse(n.func) for n in ast.walk(albero) if isinstance(n, ast.Call)}
+    assert "regime_changed" in chiamate
+
+    # e resta usato per le revisioni, che sono un'altra domanda
+    assert "written.changed_dates" in fonte, \
+        "changed_dates serve ancora alle revisioni: le due domande sono distinte"

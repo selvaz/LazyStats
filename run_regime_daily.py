@@ -42,7 +42,7 @@ from lazystats.regimes.estimation import (
     PROVENANCE_SOURCE,
     fit_symbol,
 )
-from lazystats.regimes.persist import write_failure, write_fit
+from lazystats.regimes.persist import regime_changed, write_failure, write_fit
 from lazystats.regimes.report import Revision, SymbolReport
 from lazystats.regimes.report import render_html as render_report
 from lazystats.regimes.series import series_key
@@ -243,11 +243,21 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                 "detail": written.selection_reason,
             })
 
-            newest = fitted["dates"][-1]
+            # Compared against the previous trading date's reading, not
+            # against what the store did. `written.changed_dates` lists the
+            # dates a point was *written* for, and the store writes whenever it
+            # has nothing for that date yet -- which for the newest trading
+            # date is true every day. Reading it as "the regime changed"
+            # therefore flagged every instrument every day: 109 of 109 on
+            # 14 and 16 August, and on the 15th exactly the 99 that happened to
+            # get a fresh point. The number tracked how many series wrote, and
+            # never how many moved.
+            readings = fitted["readings"]
             entries.append(_entry(
                 cfg, fitted, symbol=symbol,
                 revisions=_revisions_for(depot, key, written.changed_dates),
-                changed_today=newest in written.changed_dates,
+                changed_today=regime_changed(
+                    readings[-2] if len(readings) > 1 else None, readings[-1]),
             ))
 
     return fit_and_persist
