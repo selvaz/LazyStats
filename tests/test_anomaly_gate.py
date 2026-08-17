@@ -199,6 +199,33 @@ class TestCorrelation:
         kept = [i.instrument for t in targets for i in t.items]
         assert kept == ["A8/B8", "A7/B7", "A6/B6", "A5/B5", "A4/B4"]
 
+    def test_a_tie_on_delta_breaks_on_the_label_not_encounter_order(self, cfg):
+        """Regression found by Codex review after the label-sorting fix (D8)
+        merged: sorting the *label* alone did not make the survivors of
+        `max_corr_shifts_per_day` deterministic on a tied delta -- Python's
+        stable sort still fell back to `today_corr.items()`'s own order,
+        which depends on how the payload was serialized. Six pairs share the
+        exact same delta here, one more than the cap of 5, so exactly one
+        must be dropped; which one must not depend on dict insertion order.
+        """
+        names = ["BBB", "CCC", "DDD", "EEE", "FFF", "GGG"]
+        forward = {"ticker:AAA": {f"ticker:{n}": 0.99 for n in names}}
+        backward = {"ticker:AAA": {f"ticker:{n}": 0.99 for n in reversed(names)}}
+        prior = {"ticker:AAA": {f"ticker:{n}": 0.05 for n in names}}
+        kept_forward = [
+            i.instrument for t in run(cfg, payload(corr=forward),
+                                       payload(as_of="2026-08-07", corr=prior))
+            for i in t.items
+        ]
+        kept_backward = [
+            i.instrument for t in run(cfg, payload(corr=backward),
+                                       payload(as_of="2026-08-07", corr=prior))
+            for i in t.items
+        ]
+        assert kept_forward == kept_backward == [
+            "AAA/BBB", "AAA/CCC", "AAA/DDD", "AAA/EEE", "AAA/FFF",
+        ]
+
 
 class TestBetaDivergence:
     """Threshold 3.0 sigma, with a required change of 1.5 from the prior day.
@@ -245,6 +272,35 @@ class TestBetaDivergence:
         previous = self.frame(0.02)
         previous["as_of"] = "2026-08-07"
         assert run(cfg, current, previous) == ()
+
+    @pytest.mark.parametrize("path", [
+        ("volatility_short", "volatility", BENCHMARK),
+        ("volatility_short", "volatility", "ticker:AAA"),
+        ("returns_table", BENCHMARK),
+        ("returns_table", "ticker:AAA"),
+    ])
+    def test_a_null_entry_is_treated_as_missing_not_a_crash(self, cfg, path):
+        """Regression found by Codex review after the D17 validation fix
+        merged: a key *present with a null value* (not absent) reached
+        `.get(key, {}).get(...)` in `_beta_z_scores` -- `.get(key, {})` only
+        substitutes the default for a MISSING key, so the explicit null
+        raised AttributeError instead of being treated as "no reading",
+        exactly the case the validator is supposed to let through for
+        volatility (its documented gap marker).
+        """
+        current = self.frame(-0.09)
+        node = current
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = None
+        previous = self.frame(0.02)
+        previous["as_of"] = "2026-08-07"
+        assert BENCHMARK not in [
+            i.instrument for t in run(cfg, current, previous) for i in t.items
+        ]
+        assert "ticker:AAA" not in [
+            i.instrument for t in run(cfg, current, previous) for i in t.items
+        ]
 
 
 class TestTheResultCarriesItsRun:

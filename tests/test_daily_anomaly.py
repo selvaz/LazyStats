@@ -417,6 +417,248 @@ class TestInputIsValidated:
         p.write_text(json.dumps(body), encoding="utf-8")
         load_input_artifact(p)  # must not raise
 
+    @pytest.mark.parametrize("field", ["annualized_volatility", "period_volatility"])
+    def test_a_non_numeric_volatility_field_is_a_run_error(self, tmp_path, field):
+        """Found by Codex review: the entry-level check (test above) accepts
+        any dict, but `_vol_ratios`/`_beta_z_scores` divide and multiply by
+        `annualized_volatility`/`period_volatility` with no type check of
+        their own -- `{"annualized_volatility": "bad"}` is a dict and would
+        crash with TypeError, not RunError."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["volatility_short"]["volatility"] = {"ticker:AAA": {field: "bad"}}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match=field):
+            load_input_artifact(p)
+
+    def test_a_missing_volatility_field_is_still_allowed(self, tmp_path):
+        """Both fields are optional -- an entry only ever needs the one the
+        consumer that reads it actually uses."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["volatility_short"]["volatility"] = {
+            "ticker:AAA": {"annualized_volatility": 0.2}
+        }
+        p.write_text(json.dumps(body), encoding="utf-8")
+        load_input_artifact(p)  # must not raise
+
+    @pytest.mark.parametrize("field", ["annualized_volatility", "period_volatility"])
+    def test_an_explicit_null_volatility_field_is_allowed(self, tmp_path, field):
+        """Regression: the first version of the field-level check above
+        rejected the field being present with an explicit ``null`` (only
+        ``field in entry`` was checked, and `_is_finite_number(None)` is
+        False) -- but that is exactly what the real producer emits when
+        fewer than two observations exist, and both `_vol_ratios` and
+        `_beta_z_scores` already treat it as "no reading" via `.get()`
+        (which does not distinguish absent from present-and-null). Found by
+        Codex review before this ever shipped."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["volatility_short"]["volatility"] = {"ticker:AAA": {field: None}}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        load_input_artifact(p)  # must not raise
+
+    def test_a_non_object_returns_table_1w_is_a_run_error(self, tmp_path):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["returns_table"] = {"ticker:EXAMPLE": {"1W": "bad"}}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="1W"):
+            load_input_artifact(p)
+
+    def test_a_non_numeric_returns_table_return_is_a_run_error(self, tmp_path):
+        """Found by Codex review: `_beta_z_scores` reaches
+        `returns_table[instrument]["1W"]["return"]` in arithmetic with no
+        type check of its own once the object levels above it are valid."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["returns_table"] = {"ticker:EXAMPLE": {"1W": {"return": "bad"}}}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="return"):
+            load_input_artifact(p)
+
+    def test_a_null_returns_table_1w_or_return_is_allowed(self, tmp_path):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["returns_table"] = {
+            "ticker:EXAMPLE": {"1W": None},
+            "ticker:OTHER": {"1W": {"return": None}},
+        }
+        p.write_text(json.dumps(body), encoding="utf-8")
+        load_input_artifact(p)  # must not raise
+
+    def test_a_non_object_returns_table_entry_is_a_run_error(self, tmp_path):
+        """Found by Codex review: only the outer `returns_table` container was
+        checked. `_beta_z_scores` reads `returns_table[instrument]["1W"]`;
+        `{"ticker:EXAMPLE": "bad"}` passed the old check (the outer dict is
+        fine) and only the string's absent `.get` caught it downstream."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["returns_table"] = {"ticker:EXAMPLE": "bad"}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="returns_table"):
+            load_input_artifact(p)
+
+    def test_a_null_returns_table_entry_is_allowed(self, tmp_path):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["returns_table"] = {"ticker:EXAMPLE": None}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        load_input_artifact(p)  # must not raise
+
+    @pytest.mark.parametrize("payload_name,path,bad_value", [
+        ("current", ("outliers_last5", "outliers", 0, "z_score"), float("inf")),
+        ("current", ("outliers_last5", "outliers", 0, "log_return"), float("nan")),
+        ("current", ("correlation_short", "correlation", "ticker:AAA", "ticker:BBB"),
+         float("-inf")),
+    ])
+    def test_nan_and_infinity_are_run_errors(self, tmp_path, payload_name, path, bad_value):
+        """Python's json module accepts the non-standard NaN/Infinity tokens
+        by default, and both satisfy isinstance(x, float) -- a plain type
+        check lets them straight through to become an infinite delta or a
+        NaN comparison, silently, and get written back into the output
+        artifact as the same nonstandard token."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["outliers_last5"]["outliers"] = [{
+            "instrument": "ticker:AAA", "date": "2026-08-10", "z_score": 4.0,
+            "log_return": -0.06, "direction": "down",
+        }]
+        body["current"]["correlation_short"]["correlation"] = {"ticker:AAA": {"ticker:BBB": 0.5}}
+        node = body[payload_name]
+        for key in path[:-1]:
+            node = node[key]
+        node[path[-1]] = bad_value
+        # json.dumps emits the bare (non-standard) Infinity/NaN tokens for
+        # these by default, and json.loads on the far side -- inside
+        # load_input_artifact -- accepts them right back as the same floats.
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="finite"):
+            load_input_artifact(p)
+
+    def test_an_integer_too_large_for_float_is_a_run_error_not_a_crash(self, tmp_path):
+        """Found by Codex review on the NaN/Infinity fix above: a JSON
+        integer with no decimal point parses as an arbitrary-precision
+        Python int, not a float. `math.isfinite()` converts its argument to
+        float internally and raises `OverflowError` -- not `False` -- once
+        the value is too large to represent as one. The very check meant to
+        turn a crash into a clean RunError would itself have crashed, with
+        the wrong exception type, on a valid JSON document.
+        """
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["outliers_last5"]["outliers"] = [{
+            "instrument": "ticker:AAA", "date": "2026-08-10", "z_score": 10**309,
+            "log_return": -0.06, "direction": "down",
+        }]
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="finite"):
+            load_input_artifact(p)
+
+    def test_a_null_correlation_row_is_not_allowed(self, tmp_path):
+        """Correlation is a nested matrix, not a flat ticker->stats map like
+        volatility: a row is consumed as `row.items()` in anomaly_gate.py
+        with no null guard, unlike a volatility value (`s.get(...) if s else
+        None`). A null *row* would previously pass validation the same way a
+        null volatility value does, and crash the gate with AttributeError
+        instead of a RunError naming the field -- found by Codex review after
+        the volatility/correlation fix above had already merged.
+        """
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["correlation_short"]["correlation"] = {"ticker:AAA": None}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="correlation_short.correlation"):
+            load_input_artifact(p)
+
+    def test_a_null_correlation_cell_inside_a_row_is_allowed(self, tmp_path):
+        """The row itself must be an object (test above); a *cell* inside a
+        valid row may still be None -- evaluate_gate's own `if value is None:
+        continue` treats that as "no reading for this pair"."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["correlation_short"]["correlation"] = {"ticker:AAA": {"ticker:BBB": None}}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        load_input_artifact(p)  # must not raise
+
+    @pytest.mark.parametrize("bad_cell", [1.5, -1.5, 1e308])
+    def test_an_out_of_range_correlation_cell_is_a_run_error(self, tmp_path, bad_cell):
+        """A correlation coefficient is mathematically bounded to [-1, 1] --
+        not an arbitrary tightening. Past that range `rho ** 2` in
+        `_beta_z_scores` raises OverflowError (not a graceful `inf`) for a
+        magnitude a plain finite-number check lets straight through. Found
+        by Codex review on the NaN/Infinity fix for this same block."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        row = {"ticker:BBB": bad_cell}
+        body["current"]["correlation_short"]["correlation"] = {"ticker:AAA": row}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="between -1 and 1"):
+            load_input_artifact(p)
+
+    @pytest.mark.parametrize("bad_cell", ["STRINGA", ["a", "list"], True, False])
+    def test_a_non_numeric_correlation_cell_is_a_run_error(self, tmp_path, bad_cell):
+        """Found by Codex review after the row-level fix above merged: the
+        row must be an object (test above), but nothing checked what is
+        *inside* it. `_corr_band()` compares a cell against a threshold with
+        `>=`/`<=`, which raises TypeError on anything but a real number --
+        `True`/`False` are technically `int` in Python and would silently
+        compare as 1/0 rather than being refused as the wrong type.
+        """
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        row = {"ticker:BBB": bad_cell}
+        body["current"]["correlation_short"]["correlation"] = {"ticker:AAA": row}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="correlation_short.correlation"):
+            load_input_artifact(p)
+
+    @pytest.mark.parametrize("key", ["instrument", "date", "z_score", "log_return", "direction"])
+    def test_an_outlier_missing_a_required_field_is_a_run_error(self, tmp_path, key):
+        """Found by Codex review: evaluate_gate indexes all five fields
+        directly (o["date"], o["instrument"], o["z_score"], o["log_return"],
+        o["direction"]) with no `.get()` anywhere -- an object missing any of
+        them was, being a dict, accepted by the shape check alone and would
+        crash with KeyError instead of RunError."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        entry = {"instrument": "ticker:AAA", "date": "2026-08-10", "z_score": 4.0,
+                 "log_return": -0.06, "direction": "down"}
+        del entry[key]
+        body["current"]["outliers_last5"]["outliers"] = [entry]
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match=key):
+            load_input_artifact(p)
+
+    @pytest.mark.parametrize("key,bad_value", [
+        ("z_score", "not-a-number"), ("log_return", None), ("direction", ""),
+        ("instrument", " ticker:AAA"), ("date", "2026-13-40"),
+    ])
+    def test_an_outlier_with_a_malformed_field_is_a_run_error(self, tmp_path, key, bad_value):
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        entry = {"instrument": "ticker:AAA", "date": "2026-08-10", "z_score": 4.0,
+                 "log_return": -0.06, "direction": "down"}
+        entry[key] = bad_value
+        body["current"]["outliers_last5"]["outliers"] = [entry]
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError):
+            load_input_artifact(p)
+
+    @pytest.mark.parametrize("key", ["z_score", "log_return"])
+    def test_outlier_numeric_fields_reject_bool(self, tmp_path, key):
+        """``True``/``False`` are ``int`` in Python and would silently pass an
+        ``isinstance(x, (int, float))`` check as 1/0."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        entry = {"instrument": "ticker:AAA", "date": "2026-08-10", "z_score": 4.0,
+                 "log_return": -0.06, "direction": "down"}
+        entry[key] = True
+        body["current"]["outliers_last5"]["outliers"] = [entry]
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match=key):
+            load_input_artifact(p)
+
     @pytest.mark.parametrize("key", ["upstream_series_key", "upstream_produced_by"])
     def test_captured_identity_is_required(self, tmp_path, key):
         p = write_input(tmp_path / "input.json")
