@@ -296,12 +296,15 @@ def load_input_artifact(path: Path) -> dict[str, Any]:
             if value_name == "outliers":
                 for i, entry in enumerate(value):
                     if not isinstance(entry, dict):
-                        raise RunError(f"{where}[{i}] must be an object, got {type(entry).__name__}")
+                        raise RunError(
+                            f"{where}[{i}] must be an object, got {type(entry).__name__}"
+                        )
             else:
                 for inner_key, entry in value.items():
                     if entry is not None and not isinstance(entry, dict):
                         raise RunError(
-                            f"{where}[{inner_key!r}] must be an object or null, got {type(entry).__name__}"
+                            f"{where}[{inner_key!r}] must be an object or null, "
+                            f"got {type(entry).__name__}"
                         )
         if not isinstance(payload.get("returns_table"), dict):
             raise RunError(f"input artifact's '{label}.returns_table' must be an object")
