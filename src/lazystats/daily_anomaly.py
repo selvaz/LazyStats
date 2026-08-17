@@ -293,7 +293,7 @@ def load_input_artifact(path: Path) -> dict[str, Any]:
             # on every inner value, which raises AttributeError on a non-empty
             # string rather than treating it as the malformed data it is.
             where = f"{label}.{block_name}.{value_name}"
-            if value_name == "outliers":
+            if isinstance(value, list):
                 for i, entry in enumerate(value):
                     if not isinstance(entry, dict):
                         raise RunError(
