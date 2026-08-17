@@ -203,8 +203,19 @@ def evaluate_gate(
                 continue
             delta = abs(value - prior)
             if delta >= config.corr_delta_min:
+                # Sorted, not `a`/`b` as encountered: those come from
+                # iterating `today_corr`, whose order depends on how the
+                # payload was serialized upstream -- same pair, different
+                # label depending on serializer. Sorting makes the label a
+                # property of the pair, not of iteration order, which is
+                # also what makes `candidates.sort` below's tie-breaking
+                # (stable, first-encountered-wins on equal delta) depend
+                # only on delta and not on a label that could differ between
+                # two readers of the identical matrix (D8 in
+                # ecosystem-cleanup/docs/deferred-fixes.md).
+                left, right = sorted((a, b))
                 candidates.append(AnomalyItem(
-                    instrument=f"{a.replace('ticker:', '')}/{b.replace('ticker:', '')}",
+                    instrument=f"{left.replace('ticker:', '')}/{right.replace('ticker:', '')}",
                     anomaly_type="correlation_shift", date=as_of,
                     detail={"band": band, "correlation_short": value,
                             "correlation_prior": prior, "correlation_delta": delta},
