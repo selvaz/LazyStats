@@ -386,6 +386,37 @@ class TestInputIsValidated:
         with pytest.raises(RunError, match=block):
             load_input_artifact(p)
 
+    @pytest.mark.parametrize("payload_name,block,value_name,bad_value", [
+        ("current", "volatility_short", "volatility", {"ticker:AAA": "STRINGA"}),
+        ("current", "volatility_long", "volatility", {"ticker:AAA": ["not", "a", "dict"]}),
+        ("previous", "correlation_short", "correlation", {"ticker:AAA/ticker:BBB": "STRINGA"}),
+        ("current", "outliers_last5", "outliers", ["not", "a", "dict"]),
+    ])
+    def test_malformed_metric_values_are_run_errors(
+            self, tmp_path, payload_name, block, value_name, bad_value):
+        """The shape check on the outer container (test above) would accept
+        these: a dict is a dict, a list is a list. It is the *value inside*
+        that is wrong -- exactly what a legitimate-looking but broken upstream
+        producer emits. Without this, it surfaces deep in the gate as
+        AttributeError on ``s.get(...)`` rather than as a RunError naming the
+        field, once a run reaches a value the shape check alone lets through.
+        """
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body[payload_name][block][value_name] = bad_value
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match=f"{block}.{value_name}"):
+            load_input_artifact(p)
+
+    def test_a_null_metric_value_is_allowed(self, tmp_path):
+        """None is the documented gap marker for a ticker with no reading --
+        not every inner value has to be a dict, just not some other type."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["volatility_short"]["volatility"] = {"ticker:AAA": None}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        load_input_artifact(p)  # must not raise
+
     @pytest.mark.parametrize("key", ["upstream_series_key", "upstream_produced_by"])
     def test_captured_identity_is_required(self, tmp_path, key):
         p = write_input(tmp_path / "input.json")

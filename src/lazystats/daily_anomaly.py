@@ -287,6 +287,22 @@ def load_input_artifact(path: Path) -> dict[str, Any]:
                     f"input artifact's '{label}.{block_name}.{value_name}' "
                     f"must be a {expected.__name__}"
                 )
+            # The shape check above stops at the outer container: it would
+            # accept {"ticker:A": "STRINGA"} as a valid volatility block. The
+            # gate then does `s.get("annualized_volatility") if s else None`
+            # on every inner value, which raises AttributeError on a non-empty
+            # string rather than treating it as the malformed data it is.
+            where = f"{label}.{block_name}.{value_name}"
+            if value_name == "outliers":
+                for i, entry in enumerate(value):
+                    if not isinstance(entry, dict):
+                        raise RunError(f"{where}[{i}] must be an object, got {type(entry).__name__}")
+            else:
+                for inner_key, entry in value.items():
+                    if entry is not None and not isinstance(entry, dict):
+                        raise RunError(
+                            f"{where}[{inner_key!r}] must be an object or null, got {type(entry).__name__}"
+                        )
         if not isinstance(payload.get("returns_table"), dict):
             raise RunError(f"input artifact's '{label}.returns_table' must be an object")
 
