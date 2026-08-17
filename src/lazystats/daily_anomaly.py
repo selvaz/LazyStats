@@ -376,10 +376,22 @@ def load_input_artifact(path: Path) -> dict[str, Any]:
                     # real number (None already passes: `_corr_band(None, ..)`
                     # returns None by its own explicit check).
                     for cell_key, cell in entry.items():
-                        if cell is not None and not _is_finite_number(cell):
+                        if cell is None:
+                            continue
+                        if not _is_finite_number(cell):
                             raise RunError(
                                 f"{where}[{inner_key!r}][{cell_key!r}] must be a finite "
                                 f"number or null, got {cell!r}"
+                            )
+                        # A correlation coefficient is mathematically bounded
+                        # to [-1, 1] -- not an arbitrary tightening. Past
+                        # that range `rho ** 2` in _beta_z_scores overflows
+                        # (OverflowError, not a graceful inf) for magnitudes
+                        # a "finite number" check alone lets through.
+                        if not -1.0 <= cell <= 1.0:
+                            raise RunError(
+                                f"{where}[{inner_key!r}][{cell_key!r}] must be between "
+                                f"-1 and 1, got {cell!r}"
                             )
             else:
                 for inner_key, entry in value.items():

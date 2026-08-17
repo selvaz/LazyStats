@@ -581,6 +581,21 @@ class TestInputIsValidated:
         p.write_text(json.dumps(body), encoding="utf-8")
         load_input_artifact(p)  # must not raise
 
+    @pytest.mark.parametrize("bad_cell", [1.5, -1.5, 1e308])
+    def test_an_out_of_range_correlation_cell_is_a_run_error(self, tmp_path, bad_cell):
+        """A correlation coefficient is mathematically bounded to [-1, 1] --
+        not an arbitrary tightening. Past that range `rho ** 2` in
+        `_beta_z_scores` raises OverflowError (not a graceful `inf`) for a
+        magnitude a plain finite-number check lets straight through. Found
+        by Codex review on the NaN/Infinity fix for this same block."""
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        row = {"ticker:BBB": bad_cell}
+        body["current"]["correlation_short"]["correlation"] = {"ticker:AAA": row}
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="between -1 and 1"):
+            load_input_artifact(p)
+
     @pytest.mark.parametrize("bad_cell", ["STRINGA", ["a", "list"], True, False])
     def test_a_non_numeric_correlation_cell_is_a_run_error(self, tmp_path, bad_cell):
         """Found by Codex review after the row-level fix above merged: the
