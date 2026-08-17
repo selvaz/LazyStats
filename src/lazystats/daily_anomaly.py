@@ -24,6 +24,7 @@ here. See :mod:`lazystats.anomaly_gate_config`.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from collections.abc import Callable
@@ -104,6 +105,18 @@ def validate_as_of(value: Any) -> str:
     except ValueError as exc:
         raise RunError(f"'as_of' is not a real calendar date: {value!r} ({exc})") from exc
     return value
+
+
+def _is_finite_number(value: Any) -> bool:
+    """A real, arithmetic-safe number -- not a bool (a ``bool`` is an
+    ``int`` subclass in Python and would silently pass ``isinstance(x, (int,
+    float))``), and not NaN/Infinity (Python's ``json`` module accepts the
+    non-standard tokens ``NaN``/``Infinity``/``-Infinity`` by default, and
+    every downstream comparison and delta computed from one produces either
+    a nonsensical result or another non-finite value that gets written back
+    into the output artifact).
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def is_inside(candidate: str | Path, protected: str | Path) -> bool:
@@ -294,20 +307,124 @@ def load_input_artifact(path: Path) -> dict[str, Any]:
             # string rather than treating it as the malformed data it is.
             where = f"{label}.{block_name}.{value_name}"
             if isinstance(value, list):
+                # anomaly_gate.py indexes five required fields directly
+                # (o["date"], o["instrument"], o["z_score"], o["log_return"],
+                # o["direction"]) with no .get() anywhere -- an object missing
+                # any of them, being a dict, passed the check above and would
+                # crash with KeyError instead of RunError.
                 for i, entry in enumerate(value):
+                    entry_where = f"{where}[{i}]"
                     if not isinstance(entry, dict):
                         raise RunError(
-                            f"{where}[{i}] must be an object, got {type(entry).__name__}"
+                            f"{entry_where} must be an object, got {type(entry).__name__}"
                         )
+                    for key in ("instrument", "date", "z_score", "log_return", "direction"):
+                        if key not in entry:
+                            raise RunError(f"{entry_where} is missing '{key}'")
+                    instrument = entry["instrument"]
+                    if (not isinstance(instrument, str) or not instrument
+                            or instrument.strip() != instrument):
+                        raise RunError(
+                            f"{entry_where}: 'instrument' must be a non-empty string "
+                            f"without surrounding whitespace, got {instrument!r}"
+                        )
+                    try:
+                        validate_as_of(entry["date"])
+                    except RunError as exc:
+                        raise RunError(f"{entry_where}: {exc}") from exc
+                    for key in ("z_score", "log_return"):
+                        if not _is_finite_number(entry[key]):
+                            raise RunError(
+                                f"{entry_where}: '{key}' must be a finite number, "
+                                f"got {entry[key]!r}"
+                            )
+                    if not isinstance(entry["direction"], str) or not entry["direction"]:
+                        raise RunError(
+                            f"{entry_where}: 'direction' must be a non-empty string, "
+                            f"got {entry['direction']!r}"
+                        )
+            elif block_name == "correlation_short":
+                # Correlation is a nested matrix (row -> {other_ticker: value}),
+                # not a flat ticker -> stats map like volatility. anomaly_gate.py
+                # consumes it as `for a, row in today_corr.items(): for b, value
+                # in row.items():` -- unconditionally, with no `if row` guard --
+                # so a row itself must be an object, never null. (An individual
+                # *cell* inside a row, e.g. row["ticker:B"], may still be None:
+                # the consumer's own `if value is None: continue` treats that as
+                # "no reading for this pair", one level deeper than this check.)
+                for inner_key, entry in value.items():
+                    if not isinstance(entry, dict):
+                        raise RunError(
+                            f"{where}[{inner_key!r}] must be an object, "
+                            f"got {type(entry).__name__}"
+                        )
+                    # A cell one level deeper still, and the one level
+                    # `if value is None: continue` in anomaly_gate.py does not
+                    # reach: _corr_band() compares a cell against a threshold
+                    # with >=/<=, which raises TypeError on anything but a
+                    # real number (None already passes: `_corr_band(None, ..)`
+                    # returns None by its own explicit check).
+                    for cell_key, cell in entry.items():
+                        if cell is not None and not _is_finite_number(cell):
+                            raise RunError(
+                                f"{where}[{inner_key!r}][{cell_key!r}] must be a finite "
+                                f"number or null, got {cell!r}"
+                            )
             else:
                 for inner_key, entry in value.items():
-                    if entry is not None and not isinstance(entry, dict):
+                    if entry is None:
+                        continue
+                    if not isinstance(entry, dict):
                         raise RunError(
                             f"{where}[{inner_key!r}] must be an object or null, "
                             f"got {type(entry).__name__}"
                         )
-        if not isinstance(payload.get("returns_table"), dict):
+                    # The two fields volatility entries actually carry:
+                    # `_vol_ratios` reads "annualized_volatility",
+                    # `_beta_z_scores` reads "period_volatility". Both are
+                    # optional (missing means "no reading", same as the
+                    # entry itself being null) but must be real numbers when
+                    # present -- both are used in arithmetic (division,
+                    # multiplication) with no type check of their own.
+                    for field in ("annualized_volatility", "period_volatility"):
+                        field_value = entry.get(field)
+                        if field_value is not None and not _is_finite_number(field_value):
+                            raise RunError(
+                                f"{where}[{inner_key!r}].{field} must be a finite "
+                                f"number or null, got {field_value!r}"
+                            )
+        returns_table = payload.get("returns_table")
+        if not isinstance(returns_table, dict):
             raise RunError(f"input artifact's '{label}.returns_table' must be an object")
+        for inner_key, entry in returns_table.items():
+            returns_where = f"{label}.returns_table[{inner_key!r}]"
+            if entry is None:
+                continue
+            if not isinstance(entry, dict):
+                raise RunError(
+                    f"input artifact's '{returns_where}' must be an object or null, "
+                    f"got {type(entry).__name__}"
+                )
+            # _beta_z_scores reads returns_table[instrument]["1W"]["return"]
+            # unconditionally past this point (through _chained_get, which
+            # stops safely on a wrong TYPE but not on a wrong VALUE inside a
+            # correctly-typed object) -- both levels need the same
+            # dict-or-null / finite-number-or-null discipline as the rest of
+            # this function, or a string "return" reaches an arithmetic
+            # expression instead of being refused up front.
+            period = entry.get("1W")
+            if period is not None and not isinstance(period, dict):
+                raise RunError(
+                    f"input artifact's '{returns_where}[\"1W\"]' must be an "
+                    f"object or null, got {type(period).__name__}"
+                )
+            if isinstance(period, dict):
+                ret = period.get("return")
+                if ret is not None and not _is_finite_number(ret):
+                    raise RunError(
+                        f"input artifact's '{returns_where}[\"1W\"][\"return\"]' "
+                        f"must be a finite number or null, got {ret!r}"
+                    )
 
     comparison = data.get("comparison")
     if not isinstance(comparison, dict):

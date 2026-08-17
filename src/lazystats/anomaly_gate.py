@@ -78,6 +78,33 @@ def _corr_band(value: float | None, cfg: AnomalyGateConfig) -> str | None:
     return "mid"
 
 
+def _chained_get(mapping: dict[str, Any], *keys: str) -> Any:
+    """``.get`` through nested dicts, treating an explicit ``None`` at any
+    level the same as a missing key.
+
+    A plain chain of ``.get(key, {})`` only substitutes the default when
+    ``key`` is absent -- if the input artifact has ``{"key": null}`` instead
+    of omitting ``key``, ``.get(key, {})`` returns ``None`` (the value that
+    *is* there), and the next ``.get`` in the chain raises AttributeError.
+    ``load_input_artifact`` rejects null in the shapes it document as always
+    a real object (a correlation row, an outlier), but volatility/returns
+    entries are allowed to be null (the documented "no reading" marker), so
+    this is the consumer-side counterpart: it must never crash on exactly
+    the input the validator was told to let through.
+
+    Checks ``isinstance(current, dict)``, not just truthiness: an
+    intermediate value could also be some other JSON type the validator does
+    not reach two levels deep (e.g. ``returns_table[instrument]["1W"]`` as a
+    bare string) -- truthy but with no ``.get`` either.
+    """
+    current: Any = mapping
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
 def _vol_ratios(payload: dict[str, Any]) -> dict[str, float | None]:
     """Short-window volatility over long-window, per instrument."""
     short = payload["volatility_short"]["volatility"]
@@ -106,8 +133,8 @@ def _beta_z_scores(payload: dict[str, Any], benchmark: str) -> dict[str, float |
     corr = payload["correlation_short"]["correlation"]
     returns_1w = payload["returns_table"]
 
-    vol_bench = vol.get(benchmark, {}).get("period_volatility")
-    bench_return = returns_1w.get(benchmark, {}).get("1W", {}).get("return")
+    vol_bench = _chained_get(vol, benchmark, "period_volatility")
+    bench_return = _chained_get(returns_1w, benchmark, "1W", "return")
 
     out: dict[str, float | None] = {}
     if not vol_bench or bench_return is None:
@@ -115,9 +142,9 @@ def _beta_z_scores(payload: dict[str, Any], benchmark: str) -> dict[str, float |
     for instrument, v in vol.items():
         if instrument == benchmark:
             continue
-        vol_a = v.get("period_volatility")
-        rho = corr.get(instrument, {}).get(benchmark)
-        actual = returns_1w.get(instrument, {}).get("1W", {}).get("return")
+        vol_a = v.get("period_volatility") if v else None
+        rho = _chained_get(corr, instrument, benchmark)
+        actual = _chained_get(returns_1w, instrument, "1W", "return")
         if vol_a is None or rho is None or actual is None:
             out[instrument] = None
             continue
@@ -221,8 +248,15 @@ def evaluate_gate(
                             "correlation_prior": prior, "correlation_delta": delta},
                 ))
     # Worst movers first, then capped: a data glitch could otherwise produce
-    # hundreds of pairs and inflate the investigation that follows.
-    candidates.sort(key=lambda it: it.detail["correlation_delta"], reverse=True)
+    # hundreds of pairs and inflate the investigation that follows. Sorting
+    # by delta alone leaves ties to Python's stable sort, i.e. to whatever
+    # order `today_corr.items()` encountered them in -- serialization-
+    # dependent, the exact non-determinism the sorted-label fix above closed
+    # for the label itself. The canonical label (`it.instrument`, built from
+    # the same `sorted((a, b))` above) breaks ties the same way regardless
+    # of which reader produced the matrix. `-delta` keeps one ascending sort
+    # doing both: worst movers first, ties alphabetical.
+    candidates.sort(key=lambda it: (-it.detail["correlation_delta"], it.instrument))
     items.extend(candidates[:config.max_corr_shifts_per_day])
 
     # -- beta divergence: unusual sigma AND a fresh move ------------------
