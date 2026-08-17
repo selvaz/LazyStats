@@ -167,6 +167,22 @@ class TestCorrelation:
                               corr={"ticker:AAA": {"ticker:BBB": 0.85}}))
         assert targets == ()
 
+    def test_the_pair_label_is_sorted_not_iteration_order(self, cfg):
+        """Regression for D8 (ecosystem-cleanup/docs/deferred-fixes.md): the
+        label used to be composed from whichever of `a`/`b` the dict
+        iteration reached first, so the same pair could read "AAA/BBB" from
+        one serialization and "BBB/AAA" from another that preserved a
+        different key order -- same matrix, disagreeing label. The matrix
+        below only has the BBB->AAA half (still legal: `run()` reads
+        `row.items()`, it does not require both halves), so a label built
+        from encounter order would read "BBB/AAA"; sorted, it must read
+        "AAA/BBB" regardless.
+        """
+        targets = run(cfg, payload(corr={"ticker:BBB": {"ticker:AAA": -0.6}}),
+                      payload(as_of="2026-08-07",
+                              corr={"ticker:BBB": {"ticker:AAA": 0.5}}))
+        assert selected(targets) == [("2026-08-10", "correlation_shift", "AAA/BBB")]
+
     def test_the_daily_cap_holds(self, cfg):
         """A data glitch can produce hundreds of pairs; the cap is what stops
         one from inflating the investigation."""
