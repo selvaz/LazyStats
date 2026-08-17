@@ -536,6 +536,25 @@ class TestInputIsValidated:
         with pytest.raises(RunError, match="finite"):
             load_input_artifact(p)
 
+    def test_an_integer_too_large_for_float_is_a_run_error_not_a_crash(self, tmp_path):
+        """Found by Codex review on the NaN/Infinity fix above: a JSON
+        integer with no decimal point parses as an arbitrary-precision
+        Python int, not a float. `math.isfinite()` converts its argument to
+        float internally and raises `OverflowError` -- not `False` -- once
+        the value is too large to represent as one. The very check meant to
+        turn a crash into a clean RunError would itself have crashed, with
+        the wrong exception type, on a valid JSON document.
+        """
+        p = write_input(tmp_path / "input.json")
+        body = json.loads(p.read_text(encoding="utf-8"))
+        body["current"]["outliers_last5"]["outliers"] = [{
+            "instrument": "ticker:AAA", "date": "2026-08-10", "z_score": 10**309,
+            "log_return": -0.06, "direction": "down",
+        }]
+        p.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(RunError, match="finite"):
+            load_input_artifact(p)
+
     def test_a_null_correlation_row_is_not_allowed(self, tmp_path):
         """Correlation is a nested matrix, not a flat ticker->stats map like
         volatility: a row is consumed as `row.items()` in anomaly_gate.py

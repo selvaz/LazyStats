@@ -116,7 +116,18 @@ def _is_finite_number(value: Any) -> bool:
     a nonsensical result or another non-finite value that gets written back
     into the output artifact).
     """
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # A JSON integer with no decimal point parses as an arbitrary-
+        # precision Python int, not a float -- math.isfinite() converts its
+        # argument to float internally, which raises OverflowError (not
+        # False) once the value is too large to represent as one. Anything
+        # that overflows float range is exactly as unusable to the
+        # float-only arithmetic downstream as NaN/Infinity are.
+        return False
 
 
 def is_inside(candidate: str | Path, protected: str | Path) -> bool:
