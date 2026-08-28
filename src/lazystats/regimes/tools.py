@@ -69,7 +69,7 @@ from .core import (
     # multivariate independent-emission core
     MultiVarFitResult, fit_multivar_hmm, fit_with_auto_S_multivar,
     # private helpers reused by the tool layer
-    _ensure_2d, _count_free_params, _state_vol_measure, _series_vol_measure,
+    _ensure_2d, _count_free_params, _series_vol_measure,
 )
 
 __all__ = [
