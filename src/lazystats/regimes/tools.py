@@ -69,7 +69,7 @@ from .core import (
     # multivariate independent-emission core
     MultiVarFitResult, fit_multivar_hmm, fit_with_auto_S_multivar,
     # private helpers reused by the tool layer
-    _ensure_2d, _count_free_params, _state_vol_measure,
+    _ensure_2d, _count_free_params, _state_vol_measure, _series_vol_measure,
 )
 
 __all__ = [
@@ -771,15 +771,24 @@ def _resolve_result(fit_result: dict, result_key: str) -> dict:
 
 
 def _series_to_dict(
-    col: str, res: FitResult, Y_col: np.ndarray, reorder_by: str = "vol",
+    col: str, res: FitResult, Y_col: np.ndarray, reorder_by: str = "vol", series_idx: int = 0,
 ) -> Dict[str, Any]:
-    """Build the per-series output dict shared by fit_regimes and compare_emission_models."""
+    """Build the per-series output dict shared by fit_regimes and compare_emission_models.
+
+    ``series_idx`` is this series' column position within ``res.covars_`` —
+    0 whenever ``res`` was fit on a single column (panel-style, one HMM per
+    series), or this series' position among the columns ``res`` was jointly
+    fit on (joint_diag/joint_full, shared regime across series). Passing the
+    wrong index here silently reports another series' variance instead of
+    this one's — always pass the index into the SAME matrix ``res`` was
+    fitted against, not a global/unrelated column index.
+    """
     S          = int(res.S)
     high_state = S - 1   # vol-ascending order guaranteed
     labels     = regime_labels_from_S(S)
     state      = res.viterbi_path_.astype(int)
     gamma      = np.asarray(res.gamma_, dtype=float)
-    vols       = _state_vol_measure(res.covars_, res.cov_type)  # (S,) vol measure per state
+    vols       = _series_vol_measure(res.covars_, res.cov_type, series_idx)  # (S,) vol for THIS series
 
     regime_stats = []
     for s in range(S):
@@ -1073,7 +1082,7 @@ def apply_regime_params(
                 f"can be aligned by name.")
         res = infer_with_params(Y_use, p)
         for j, col in enumerate(out_cols):
-            full_result[col] = _series_to_dict(col, res, Y_use[:, j])
+            full_result[col] = _series_to_dict(col, res, Y_use[:, j], series_idx=j)
     else:
         pbs = rec.get("params_by_series", {})
         for j, col in enumerate(cols):
@@ -1083,7 +1092,7 @@ def apply_regime_params(
                     f"Available: {sorted(pbs)}.")
             p = HMMParams.from_dict(pbs[col])
             res = infer_with_params(Y[:, j:j+1], p)
-            full_result[col] = _series_to_dict(col, res, Y[:, j])
+            full_result[col] = _series_to_dict(col, res, Y[:, j], series_idx=0)
 
     full_output = {"model": model, "criterion": rec.get("provenance", {}).get("criterion", ""),
                    "n_timesteps": int(Y.shape[0]), "series": full_result,
@@ -1239,13 +1248,13 @@ def fit_regimes(
             out = fit_with_auto_S(Y[:, j:j+1], random_state=int(rng.randint(0, 2**31-1)),
                                   **{**common, "cov_type": "diag"})
             res = reorder_fitresult(out["final_result"], by="vol", ascending=True)
-            full_result[col] = _series_to_dict(col, res, Y[:, j])
+            full_result[col] = _series_to_dict(col, res, Y[:, j], series_idx=0)
             params_by_series[col] = HMMParams.from_fitresult(res).to_dict()
     else:
         out = fit_with_auto_S(Y, random_state=int(rng.randint(0, 2**31-1)), **common)
         res = reorder_fitresult(out["final_result"], by="vol", ascending=True)
         for j, col in enumerate(cols):
-            full_result[col] = _series_to_dict(col, res, Y[:, j])
+            full_result[col] = _series_to_dict(col, res, Y[:, j], series_idx=j)
         joint_params = HMMParams.from_fitresult(res).to_dict()
 
     full_output = {"model": model, "criterion": criterion, "n_timesteps": T,
@@ -1685,7 +1694,8 @@ def compare_emission_models(
 
             n_params = _count_free_params(S, k if is_joint else 1,
                                           v_kwargs["cov_type"], v_kwargs["shared_mean"])
-            s_data   = _series_to_dict(col, res, Y[:, col_idx])
+            s_data   = _series_to_dict(col, res, Y[:, col_idx],
+                                        series_idx=(col_idx if is_joint else 0))
             out[col].append({
                 "model":        v_name,
                 "bic":          float(res.bic),
