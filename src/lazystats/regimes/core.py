@@ -646,6 +646,26 @@ def _state_vol_measure(covars: np.ndarray, cov_type: CovType) -> np.ndarray:
         return C.reshape(C.shape[0], -1).mean(axis=1)
     return np.array([np.trace(C[s]) for s in range(C.shape[0])], dtype=float)
 
+
+def _series_vol_measure(covars: np.ndarray, cov_type: CovType, series_idx: int) -> np.ndarray:
+    """Per-state variance for ONE series (``series_idx``) within a covariance stack.
+
+    ``_state_vol_measure`` reduces across *all* series to build a single
+    per-state ordering key (used by ``reorder_fitresult``) -- that
+    cross-series average is correct for sorting states, but it is NOT a
+    per-series volatility. For a joint fit (shared regime, multiple series),
+    every series has its own diagonal entry in ``covars_``; this returns that
+    entry so each series reports its own vol instead of the same
+    all-series-averaged number.
+    """
+    C = np.asarray(covars, dtype=float)
+    if C.ndim == 3:
+        # (S, k, k): both 'diag' and 'full' store each series' own variance
+        # on the diagonal.
+        return np.array([C[s, series_idx, series_idx] for s in range(C.shape[0])])
+    # (S, k) compact form.
+    return C[:, series_idx]
+
 def _state_mean_measure(means: np.ndarray) -> np.ndarray:
     M = np.asarray(means, dtype=float)
     return M.mean(axis=1)

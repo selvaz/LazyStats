@@ -29,6 +29,7 @@ from lazystats.regimes.core import (
     _make_sticky_transmat,
     _expected_durations,
     _state_vol_measure,
+    _series_vol_measure,
     # reorder / labels
     reorder_fitresult,
     regime_labels_from_S,
@@ -263,6 +264,56 @@ class TestReorderFitResult:
         r = reorder_fitresult(res, by="vol", ascending=True)
         vols = _state_vol_measure(r.covars_, r.cov_type)
         assert vols[0] <= vols[1]
+
+
+class TestSeriesVolMeasure:
+    """Regression coverage for the joint-model per-series vol bug.
+
+    ``_state_vol_measure`` deliberately averages across all series to build a
+    single per-state ordering key (correct for ``reorder_fitresult``). But a
+    joint fit (shared regime, multiple series) needs each series' OWN
+    diagonal variance, not that cross-series average — reusing
+    ``_state_vol_measure``'s output as a per-series number was exactly the
+    bug: two series with very different volatility were reported with
+    identical numbers. ``_series_vol_measure`` must return the correct
+    per-series diagonal entry instead.
+    """
+
+    def test_diag_3d_returns_own_diagonal_not_cross_series_mean(self):
+        # 2 states, 2 series. Series 0 variance is always much smaller than
+        # series 1's -- if the bug were present both would report the same
+        # (state-averaged) number instead of their own value.
+        covars = np.array([
+            [[0.01, 0.0], [0.0, 0.09]],   # state 0: series0 var=0.01, series1 var=0.09
+            [[0.04, 0.0], [0.0, 0.36]],   # state 1: series0 var=0.04, series1 var=0.36
+        ])
+        vol_series0 = _series_vol_measure(covars, "diag", series_idx=0)
+        vol_series1 = _series_vol_measure(covars, "diag", series_idx=1)
+
+        np.testing.assert_allclose(vol_series0, [0.01, 0.04])
+        np.testing.assert_allclose(vol_series1, [0.09, 0.36])
+        assert list(vol_series0) != list(vol_series1)
+
+        # The buggy behaviour would have been the cross-series mean instead:
+        buggy_shared = _state_vol_measure(covars, "diag")
+        assert not np.allclose(vol_series0, buggy_shared)
+        assert not np.allclose(vol_series1, buggy_shared)
+
+    def test_full_3d_returns_own_diagonal(self):
+        covars = np.array([
+            [[0.02, 0.005], [0.005, 0.5]],
+            [[0.08, 0.01], [0.01, 2.0]],
+        ])
+        vol_series0 = _series_vol_measure(covars, "full", series_idx=0)
+        vol_series1 = _series_vol_measure(covars, "full", series_idx=1)
+        np.testing.assert_allclose(vol_series0, [0.02, 0.08])
+        np.testing.assert_allclose(vol_series1, [0.5, 2.0])
+
+    def test_compact_2d_form(self):
+        # (S, k) compact diag form, as used by the synthetic FitResult fixture.
+        covars = np.array([[0.01, 0.09], [0.04, 0.36]])
+        np.testing.assert_allclose(_series_vol_measure(covars, "diag", series_idx=0), [0.01, 0.04])
+        np.testing.assert_allclose(_series_vol_measure(covars, "diag", series_idx=1), [0.09, 0.36])
 
 
 class TestRegimeLabelsFromS:

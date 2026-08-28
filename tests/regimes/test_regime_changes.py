@@ -19,6 +19,38 @@ def _fit_result(states, index=None):
 
 
 # --------------------------------------------------------------------------- #
+# fit_regimes(model="joint_diag") — per-series vol must not be shared         #
+# --------------------------------------------------------------------------- #
+def test_joint_diag_reports_distinct_per_series_vol() -> None:
+    # Regression test: a joint fit (shared regime, diagonal covariance) once
+    # reported the SAME vol for every series in regime_stats (the per-series
+    # variance was silently replaced by a cross-series average used
+    # internally for state ordering). Series B is built with ~6x the
+    # amplitude of series A in both states, so a correct fit must show B's
+    # vol clearly larger than A's, and the values must differ from each
+    # other.
+    rng = np.random.RandomState(0)
+    n = 1500
+    states = rng.choice([0, 1], size=n, p=[0.8, 0.2])
+    a = np.where(states == 0, rng.normal(0, 0.005, n), rng.normal(0, 0.01, n))
+    b = np.where(states == 0, rng.normal(0, 0.03, n), rng.normal(0, 0.06, n))
+
+    out = fit_regimes(
+        data=np.column_stack([a, b]).tolist(),
+        series_names=["A", "B"],
+        model="joint_diag",
+        S_min=2, S_max=2, n_starts=8, random_state=42,
+    )
+
+    vol_a = [rs["vol"] for rs in out["series"]["A"]["regime_stats"]]
+    vol_b = [rs["vol"] for rs in out["series"]["B"]["regime_stats"]]
+
+    assert vol_a != vol_b, "A and B must not report identical per-state vol"
+    for va, vb in zip(vol_a, vol_b):
+        assert vb > va * 2, "B was simulated far more volatile than A in every state"
+
+
+# --------------------------------------------------------------------------- #
 # get_regime_changes — pure logic via fit_result (no store / no hmmlearn)      #
 # --------------------------------------------------------------------------- #
 def test_detects_changes_with_dates() -> None:
