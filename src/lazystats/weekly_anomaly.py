@@ -179,10 +179,28 @@ def gather_week(*, explanations_depot: Depot, stats_depot: Depot,
     }
 
 
+def _bare(instrument: str) -> str:
+    """An instrument id without the depot's ``ticker:`` namespace prefix.
+
+    The depot stores ``ticker:SHY``; everything a human or a model reads
+    says ``SHY`` -- format_outliers_block and reviewed_instruments both
+    strip it. format_daily_block did not, so one prompt showed the model
+    the same instrument in two shapes and it answered in the one used by
+    the other two blocks.
+
+    Measured 2026-08-29: all twelve verifications came back correct in
+    every field and were rejected on this prefix alone, which read as
+    "the agent did not verify the week" in the log. Comparison is
+    prefix-insensitive now, and the prompt no longer disagrees with
+    itself, so neither side depends on the model guessing a convention.
+    """
+    return instrument.split(":", 1)[1] if instrument.startswith("ticker:") else instrument
+
+
 def format_daily_block(items: list[dict[str, Any]]) -> str:
     parts = []
     for i, it in enumerate(items, start=1):
-        ticker = it["instrument"]
+        ticker = _bare(it["instrument"])
         parts.append(
             f"{i}. [{it['source_result_id']}] {ticker} -- {it['anomaly_type']} "
             f"on {it['date']} [{it['category']}, {it['confidence']} confidence]\n"
@@ -196,7 +214,7 @@ def format_outliers_block(outliers_payload: dict[str, Any] | None) -> str:
         return "(no outliers)"
     lines = []
     for o in outliers_payload["outliers"]:
-        ticker = o["instrument"].replace("ticker:", "")
+        ticker = _bare(o["instrument"])
         lines.append(f"- {ticker} {o['date']}: z={o['z_score']:.2f} ({o['direction']})")
     return "\n".join(lines)
 
@@ -235,16 +253,20 @@ def review(week: dict[str, Any], config: WeeklyReviewConfig, *,
         raise RuntimeError(f"the weekly review agent failed: {envelope.error}")
     payload: WeeklyReview = envelope.payload
     expected = Counter(
-        (item["source_result_id"], item["instrument"], item["anomaly_type"],
+        (item["source_result_id"], _bare(item["instrument"]), item["anomaly_type"],
          item["date"], item["category"])
         for item in week["daily_items"]
     )
     actual = Counter(
-        (v.source_result_id, v.instrument, v.anomaly_type, v.date, v.original_category)
+        (v.source_result_id, _bare(v.instrument), v.anomaly_type, v.date,
+         v.original_category)
         for v in payload.verifications
     )
     if actual != expected:
-        raise RuntimeError("weekly review verifications must match daily items one-to-one")
+        raise RuntimeError(
+            "weekly review verifications must match daily items one-to-one; "
+            f"missing {sorted(expected - actual)}, unexpected {sorted(actual - expected)}"
+        )
     return payload
 
 
@@ -264,7 +286,7 @@ def review_payload(week: dict[str, Any], result: WeeklyReview) -> dict[str, Any]
 
 
 def reviewed_instruments(week: dict[str, Any]) -> list[str]:
-    return sorted({it["instrument"].replace("ticker:", "") for it in week["daily_items"]})
+    return sorted({_bare(it["instrument"]) for it in week["daily_items"]})
 
 
 def save_review(week: dict[str, Any], result: WeeklyReview, *, depot: Any,
