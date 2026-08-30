@@ -232,9 +232,16 @@ class TestTheLayoutTheAgentSees:
         assert format_outliers_block({"outliers": []}) == "(no outliers)"
 
     def test_items_are_numbered_from_one(self):
+        """The block shows the bare ticker, like the outliers block beside it.
+
+        It used to print the depot's "ticker:" prefix here and strip it in
+        the other block, so one prompt showed the model two shapes for the
+        same instrument -- and its answers, understandably, used the other
+        one. See TestTheInstrumentPrefixDoesNotDecideTheRun.
+        """
         block = format_daily_block([item(), item(instrument="ticker:BBB")])
-        assert block.startswith("1. [res_a] ticker:AAA")
-        assert "\n2. [res_a] ticker:BBB" in block
+        assert block.startswith("1. [res_a] AAA")
+        assert "\n2. [res_a] BBB" in block
 
     def test_every_item_shows_the_source_id_the_verdict_must_copy(self):
         """The prompt tells the agent to copy this id; if the block does not
@@ -527,3 +534,88 @@ class TestTheConfiguration:
         run has no agent at all."""
         recorded = set(cfg.as_provenance())
         assert recorded == set(vars(cfg)) - {"explainer"}
+
+
+class TestTheInstrumentPrefixDoesNotDecideTheRun:
+    """The depot stores "ticker:SHY"; every block a model reads says "SHY".
+
+    Measured live 2026-08-29: the weekly review failed with "verifications
+    must match daily items one-to-one" while all twelve verdicts were
+    correct in every field. They differed on this prefix and nothing else,
+    and the log read as though the agent had not done the work.
+    """
+
+    class FakeEnvelope:
+        ok = True
+
+        def __init__(self, payload):
+            self.payload = payload
+            self.error = None
+
+    @staticmethod
+    def _week():
+        return {"daily_items": [{
+            "source_result_id": "res_1", "instrument": "ticker:SHY",
+            "anomaly_type": "return_outlier", "date": "2026-08-28",
+            "category": "monetary_policy", "confidence": "high",
+            "explanation": "Front-end repriced.",
+        }], "latest_as_of": "2026-08-29", "latest_outliers": None}
+
+    @staticmethod
+    def _answer(instrument):
+        from lazystats.weekly_anomaly import VerificationVerdict, WeeklyReview, WeeklySynthesis
+
+        return WeeklyReview(
+            verifications=[VerificationVerdict(
+                source_result_id="res_1", instrument=instrument,
+                anomaly_type="return_outlier", date="2026-08-28",
+                original_category="monetary_policy", verdict="confirmed",
+                note="Holds.")],
+            synthesis=WeeklySynthesis(narrative="n", new_trends=[],
+                                     regime_confirmations=[], new_risks=[]))
+
+    def test_a_bare_ticker_answers_a_prefixed_item(self, cfg):
+        from lazystats.weekly_anomaly import review
+
+        answer = self._answer("SHY")
+        assert review(self._week(), cfg,
+                     agent=lambda p: self.FakeEnvelope(answer)) is answer
+
+    def test_the_prefixed_form_is_still_accepted(self, cfg):
+        from lazystats.weekly_anomaly import review
+
+        answer = self._answer("ticker:SHY")
+        assert review(self._week(), cfg,
+                     agent=lambda p: self.FakeEnvelope(answer)) is answer
+
+    def test_a_genuinely_different_instrument_is_still_refused(self, cfg):
+        """Prefix-insensitive must not become instrument-insensitive."""
+        from lazystats.weekly_anomaly import review
+
+        with pytest.raises(RuntimeError, match="one-to-one"):
+            review(self._week(), cfg,
+                  agent=lambda p: self.FakeEnvelope(self._answer("TLT")))
+
+    def test_the_error_names_what_did_not_match(self, cfg):
+        """"They do not match" without saying how sent a live diagnosis
+        down a wrong path for a day."""
+        from lazystats.weekly_anomaly import review
+
+        with pytest.raises(RuntimeError, match="missing.*unexpected"):
+            review(self._week(), cfg,
+                  agent=lambda p: self.FakeEnvelope(self._answer("TLT")))
+
+    def test_the_prompt_shows_one_shape_only(self, cfg):
+        """The two blocks disagreeing is what taught the model to strip it."""
+        from lazystats.weekly_anomaly import build_prompt
+
+        prompt = build_prompt(self._week(), cfg)
+        assert "SHY" in prompt
+        assert "ticker:" not in prompt
+
+    def test_other_namespaces_are_left_alone(self):
+        from lazystats.weekly_anomaly import _bare
+
+        assert _bare("ticker:BRK.B") == "BRK.B"
+        assert _bare("fx:EUR:USD") == "fx:EUR:USD"
+        assert _bare("SHY") == "SHY"
