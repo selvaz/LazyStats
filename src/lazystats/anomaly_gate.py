@@ -173,8 +173,9 @@ def evaluate_gate(
         config: Thresholds. No defaults — see
             :mod:`lazystats.anomaly_gate_config`.
         already_investigated: ``(instrument, date)`` pairs covered by an
-            earlier investigation, so a multi-day outlier window does not
-            re-raise the same day. Supplied by the caller: reading it would
+            earlier investigation, so no anomaly type re-raises the same
+            item for the same day. Matching ignores a leading ``ticker:``
+            prefix on either side. Supplied by the caller: reading it would
             mean touching a database, and this function does not.
 
     Returns:
@@ -182,12 +183,21 @@ def evaluate_gate(
     """
     as_of = current["as_of"]
     items: list[AnomalyItem] = []
+    normalized_already_investigated = frozenset(
+        (instrument.removeprefix("ticker:"), item_date)
+        for instrument, item_date in already_investigated
+    )
+
+    def was_investigated(instrument: str, item_date: str) -> bool:
+        return (
+            instrument.removeprefix("ticker:"), item_date
+        ) in normalized_already_investigated
 
     # -- return outliers -------------------------------------------------
     for o in current["outliers_last5"]["outliers"]:
         if is_weekend(o["date"]):
             continue
-        if (o["instrument"], o["date"]) in already_investigated:
+        if was_investigated(o["instrument"], o["date"]):
             continue
         items.append(AnomalyItem(
             instrument=o["instrument"], anomaly_type="return_outlier", date=o["date"],
@@ -205,6 +215,8 @@ def evaluate_gate(
             continue
         delta = abs(ratio - prior)
         if delta >= config.vol_ratio_delta_min:
+            if was_investigated(instrument, as_of):
+                continue
             items.append(AnomalyItem(
                 instrument=instrument, anomaly_type="volatility_shift", date=as_of,
                 detail={"band": band, "ratio_short_over_long": ratio,
@@ -241,8 +253,13 @@ def evaluate_gate(
                 # two readers of the identical matrix (D8 in
                 # ecosystem-cleanup/docs/deferred-fixes.md).
                 left, right = sorted((a, b))
+                pair_instrument = (
+                    f"{left.replace('ticker:', '')}/{right.replace('ticker:', '')}"
+                )
+                if was_investigated(pair_instrument, as_of):
+                    continue
                 candidates.append(AnomalyItem(
-                    instrument=f"{left.replace('ticker:', '')}/{right.replace('ticker:', '')}",
+                    instrument=pair_instrument,
                     anomaly_type="correlation_shift", date=as_of,
                     detail={"band": band, "correlation_short": value,
                             "correlation_prior": prior, "correlation_delta": delta},
@@ -268,6 +285,8 @@ def evaluate_gate(
             continue
         delta = abs(z - prior)
         if delta >= config.beta_z_delta_min:
+            if was_investigated(instrument, as_of):
+                continue
             items.append(AnomalyItem(
                 instrument=instrument, anomaly_type="beta_divergence", date=as_of,
                 detail={"benchmark": config.beta_benchmark.replace("ticker:", ""),
