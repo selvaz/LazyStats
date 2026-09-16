@@ -303,6 +303,97 @@ class TestBetaDivergence:
         ]
 
 
+class TestAlreadyInvestigated:
+    def all_anomaly_frames(self):
+        current = payload(
+            outliers=[outlier("ticker:OUT", "2026-08-10")],
+            vol_short={
+                BENCHMARK: {"period_volatility": 0.02},
+                "ticker:BETA": {"period_volatility": 0.05},
+                "ticker:VOL": {"annualized_volatility": 0.40},
+            },
+            vol_long={"ticker:VOL": {"annualized_volatility": 0.10}},
+            corr={
+                "ticker:BETA": {BENCHMARK: 0.8},
+                "ticker:SPY": {"ticker:QQQ": -0.6},
+            },
+            returns={
+                BENCHMARK: {"1W": {"return": 0.01}},
+                "ticker:BETA": {"1W": {"return": -0.09}},
+            },
+        )
+        previous = payload(
+            as_of="2026-08-07",
+            vol_short={
+                BENCHMARK: {"period_volatility": 0.02},
+                "ticker:BETA": {"period_volatility": 0.05},
+                "ticker:VOL": {"annualized_volatility": 0.11},
+            },
+            vol_long={"ticker:VOL": {"annualized_volatility": 0.10}},
+            corr={
+                "ticker:BETA": {BENCHMARK: 0.8},
+                "ticker:SPY": {"ticker:QQQ": 0.5},
+            },
+            returns={
+                BENCHMARK: {"1W": {"return": 0.01}},
+                "ticker:BETA": {"1W": {"return": 0.02}},
+            },
+        )
+        return current, previous
+
+    def test_a_correlation_shift_is_not_repeated(self, cfg):
+        current, previous = self.all_anomaly_frames()
+        targets = run(cfg, current, previous,
+                      already=frozenset({("QQQ/SPY", "2026-08-10")}))
+        assert "correlation_shift" not in [
+            item.anomaly_type for target in targets for item in target.items
+        ]
+
+    def test_an_unprefixed_volatility_shift_is_not_repeated(self, cfg):
+        current, previous = self.all_anomaly_frames()
+        targets = run(cfg, current, previous,
+                      already=frozenset({("VOL", "2026-08-10")}))
+        assert "volatility_shift" not in [
+            item.anomaly_type for target in targets for item in target.items
+        ]
+
+    def test_a_prefixed_beta_divergence_is_not_repeated(self, cfg):
+        current, previous = self.all_anomaly_frames()
+        targets = run(cfg, current, previous,
+                      already=frozenset({("ticker:BETA", "2026-08-10")}))
+        assert "beta_divergence" not in [
+            item.anomaly_type for target in targets for item in target.items
+        ]
+
+    def test_return_outlier_dedup_is_prefix_agnostic_and_date_scoped(self, cfg):
+        current, previous = self.all_anomaly_frames()
+        today = run(cfg, current, previous,
+                    already=frozenset({("OUT", "2026-08-10")}))
+        assert "return_outlier" not in [
+            item.anomaly_type for target in today for item in target.items
+        ]
+
+        other_date = run(cfg, current, previous,
+                         already=frozenset({("OUT", "2026-08-09")}))
+        assert ("2026-08-10", "return_outlier", "ticker:OUT") in selected(other_date)
+
+    def test_an_unrelated_entry_suppresses_nothing(self, cfg):
+        current, previous = self.all_anomaly_frames()
+        targets = run(cfg, current, previous,
+                      already=frozenset({("UNRELATED", "2026-08-10")}))
+        assert {item.anomaly_type for target in targets for item in target.items} == {
+            "return_outlier", "volatility_shift", "correlation_shift", "beta_divergence",
+        }
+
+        all_investigated = frozenset({
+            ("OUT", "2026-08-10"),
+            ("VOL", "2026-08-10"),
+            ("QQQ/SPY", "2026-08-10"),
+            ("BETA", "2026-08-10"),
+        })
+        assert run(cfg, current, previous, already=all_investigated) == ()
+
+
 class TestTheResultCarriesItsRun:
     def test_every_target_carries_the_trigger_id(self, cfg):
         targets = run(cfg, payload(outliers=[outlier("ticker:AAA", "2026-08-10")]),
