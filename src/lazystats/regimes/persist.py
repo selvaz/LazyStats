@@ -198,6 +198,7 @@ def write_failure(
     series_key: str,
     estimation_date: str,
     error: str,
+    status: str = "error",
     scan_limit: int = SCAN_LIMIT,
 ) -> WriteOutcome:
     """Record that a fit failed, unless today already has a successful one."""
@@ -216,7 +217,7 @@ def write_failure(
         produced_by=PRODUCED_BY,
         instruments=[symbol],
         payload={
-            "status": "error",
+            "status": status,
             "error_msg": error[:500],
             "estimation_date": estimation_date,
         },

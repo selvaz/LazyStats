@@ -116,6 +116,8 @@ class SymbolReport:
     n_obs: int | None = None
     chart: bytes | None = None
     revisions: tuple[Revision, ...] = field(default_factory=tuple)
+    #: Failure category, displayed only when ``error`` is present.
+    status: str = "error"
 
     @property
     def ok(self) -> bool:
@@ -230,7 +232,7 @@ def render_html(entries: list[SymbolReport], *, as_of: date, generated: str,
     for entry in failed:
         recap_rows.append(
             f'<tr class="err"><td>{_esc(entry.symbol)}{_name_div(entry)}</td>'
-            f'<td colspan="4">ERROR: {_esc(entry.error)}</td></tr>'
+            f'<td colspan="4">{_esc(entry.status)}: {_esc(entry.error)}</td></tr>'
         )
 
     sections = "".join(

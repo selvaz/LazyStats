@@ -40,7 +40,11 @@ from lazystats.regimes.estimation import (
     PERIODS_PER_YEAR,
     PRODUCED_BY,
     PROVENANCE_SOURCE,
-    fit_symbol,
+)
+from lazystats.regimes.fit_process import (
+    DEFAULT_FIT_TIMEOUT_SECONDS,
+    FitTimeout,
+    run_fit_in_process,
 )
 from lazystats.regimes.persist import regime_changed, write_failure, write_fit
 from lazystats.regimes.report import Revision, SymbolReport
@@ -146,7 +150,9 @@ def _revisions_for(depot: ResultDepot, series_key: str,
 
 
 def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
-                          report_path: Path | None, generated: str):
+                          report_path: Path | None, generated: str,
+                          fit_timeout_seconds: float = DEFAULT_FIT_TIMEOUT_SECONDS,
+                          fit_function=None):
     """Fit each symbol, write it, and assemble the report — one at a time.
 
     The prices live only inside this step, and only for one symbol at a time:
@@ -198,8 +204,11 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                 variant=bundle["variant"],
             )
             try:
-                fitted = fit_symbol(
+                fitted = run_fit_in_process(
                     symbol,
+                    timeout_seconds=fit_timeout_seconds,
+                    fit_function=fit_function,
+                    market_db=bundle["market_db"],
                     start=bundle["start"],
                     end=bundle["as_of"],
                     s_max=cfg.s_max,
@@ -208,14 +217,16 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                     with_chart=report_path is not None,
                 )
             except Exception as exc:  # one symbol's failure must not end the run
+                status = "timeout" if isinstance(exc, FitTimeout) else "error"
                 message = f"{type(exc).__name__}: {exc}"
                 if not dry_run:
                     write_failure(depot, symbol=symbol, series_key=key,
-                                  estimation_date=bundle["as_of"], error=message)
+                                  estimation_date=bundle["as_of"], error=message,
+                                  status=status)
                 outcomes.append({"symbol": symbol, "series_key": key,
-                                 "status": "error", "detail": message})
+                                 "status": status, "detail": message})
                 entries.append(SymbolReport(symbol=symbol, name=cfg.names.get(symbol),
-                                            error=message))
+                                            error=message, status=status))
                 continue
 
             if dry_run:
@@ -267,7 +278,7 @@ def summarise(arg: str) -> dict:
     """Count what happened, and keep the failures legible."""
     bundle = json.loads(arg)
     outcomes = bundle["outcomes"]
-    failures = [o for o in outcomes if o["status"] == "error"]
+    failures = [o for o in outcomes if o["status"] != "ok"]
     bundle["summary"] = {
         "window": bundle["window"],
         "as_of": bundle["as_of"],
@@ -275,7 +286,8 @@ def summarise(arg: str) -> dict:
         "fitted": len(outcomes) - len(failures),
         "failed": len(failures),
         "points_written": sum(o.get("points_written", 0) for o in outcomes),
-        "failures": [{"symbol": f["symbol"], "detail": f["detail"]} for f in failures],
+        "failures": [{"symbol": f["symbol"], "status": f["status"],
+                      "detail": f["detail"]} for f in failures],
     }
     return bundle
 
@@ -312,13 +324,15 @@ def _make_persist_report(*, depot_path: str, dry_run: bool):
 
 def build_plan(cfg: RegimeConfig, *, window: str, as_of: date, market_db: str,
                production_db: str, depot_path: str, dry_run: bool,
-               report_path: Path | None = None, generated: str = "") -> Plan:
+               report_path: Path | None = None, generated: str = "",
+               fit_timeout_seconds: float = DEFAULT_FIT_TIMEOUT_SECONDS) -> Plan:
     """The pipeline: resolve, fit and write, store the run's record, then count."""
     return Plan(
         Step(_make_plan_run(cfg, window=window, as_of=as_of, market_db=market_db,
                             production_db=production_db), name="plan_run"),
         Step(_make_fit_and_persist(cfg, depot_path=depot_path, dry_run=dry_run,
-                                   report_path=report_path, generated=generated),
+                                   report_path=report_path, generated=generated,
+                                   fit_timeout_seconds=fit_timeout_seconds),
              name="fit_and_persist"),
         Step(_make_persist_report(depot_path=depot_path, dry_run=dry_run),
              name="persist_report"),
@@ -478,6 +492,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Estimation date (default: today).")
     p.add_argument("--dry-run", action="store_true",
                    help="Fit and report, write nothing to the depot.")
+    p.add_argument("--fit-timeout-seconds", type=_positive_seconds,
+                   default=DEFAULT_FIT_TIMEOUT_SECONDS,
+                   help="Per-symbol child-process deadline, including data and charts "
+                        "(default: 300s).")
     p.add_argument("--send", action="store_true",
                    help="Send the summary and the chart report to Telegram. Needs "
                         "--report-dir: there is nothing to attach otherwise.")
@@ -488,6 +506,27 @@ def build_parser() -> argparse.ArgumentParser:
                         "at all — which is most of the run's cost — and the "
                         "record is still stored.")
     return p
+
+
+def _positive_seconds(value: str) -> float:
+    import math
+
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("fit timeout must be finite and positive")
+    return seconds
+
+
+def run_exit_code(outcomes: list[dict]) -> int:
+    """G6: timeout or partial product is degraded, total fault is 1, empty is 3."""
+    if not outcomes:
+        return 3
+    if any(o["status"] == "timeout" for o in outcomes):
+        return 2
+    successes = sum(o["status"] == "ok" for o in outcomes)
+    if successes == len(outcomes):
+        return 0
+    return 2 if successes else 1
 
 
 def main() -> int:
@@ -501,7 +540,7 @@ def main() -> int:
             )
     except ConfigError as exc:
         print(f"configuration: {exc}", file=sys.stderr)
-        return 2
+        return 1
 
     as_of = (datetime.strptime(args.as_of, "%Y-%m-%d").date() if args.as_of
              else datetime.now().date())
@@ -521,6 +560,7 @@ def main() -> int:
         dry_run=args.dry_run,
         report_path=report_path,
         generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
+        fit_timeout_seconds=args.fit_timeout_seconds,
     )
     agent = Agent(engine=plan, name="regime_daily")
     # The envelope carries the failure; `.text()` throws it away.
@@ -536,14 +576,14 @@ def main() -> int:
     reported = plan_error(envelope)
     if reported is not None:
         print(f"plan: {reported}", file=sys.stderr)
-        return 3
+        return 1
     try:
         bundle = decode_bundle(envelope.text())
     except PlanFailure as exc:
         # Still reachable, and a different fault: an envelope that reports no
         # error and carries nothing usable anyway.
         print(f"plan: {exc}", file=sys.stderr)
-        return 3
+        return 1
 
     summary = bundle["summary"]
     if bundle.get("report"):
@@ -563,7 +603,7 @@ def main() -> int:
         print(reason, file=sys.stderr)
         return 2
 
-    return 1 if summary["failed"] else 0
+    return run_exit_code(bundle["outcomes"])
 
 
 if __name__ == "__main__":

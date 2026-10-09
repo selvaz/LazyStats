@@ -86,7 +86,8 @@ def build_payload(entries: list[SymbolReport], *, as_of: str, periods_per_year: 
     return {
         "as_of": as_of,
         "symbols": [_symbol_record(e) for e in fitted],
-        "errors": [{"symbol": e.symbol, "name": e.name, "error_msg": e.error}
+        "errors": [{"symbol": e.symbol, "name": e.name, "error_msg": e.error,
+                    "status": e.status}
                    for e in failed],
         "summary": {
             "n_ok": len(fitted),

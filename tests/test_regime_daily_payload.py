@@ -59,6 +59,12 @@ def row(entries=None, **overrides) -> dict:
 
 
 class TestTheRecord:
+    def test_timeout_has_an_explicit_status(self):
+        out = payload([SymbolReport(symbol="GLD", error="fit exceeded 2s",
+                                    status="timeout")])
+        assert out["errors"][0]["status"] == "timeout"
+        assert out["summary"]["n_errors"] == 1
+
     def test_a_fitted_symbol_carries_every_state_not_only_the_current_one(self):
         """A regime call at 51% and one at 99% look identical in a table of
         labels, and they are not the same reading."""
@@ -98,6 +104,12 @@ class TestTheRecord:
 
 
 class TestThePage:
+    def test_timeout_status_is_visible_in_error_cards(self):
+        page = render_html(row([SymbolReport(symbol="GLD", error="fit exceeded 2s",
+                                             status="timeout")]))
+        assert '"status": "timeout"' in page
+        assert 'esc(e.status || "error")' in page
+
     def test_the_placeholder_is_replaced(self):
         assert "__ROW_JSON__" not in render_html(row())
 

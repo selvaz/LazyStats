@@ -232,7 +232,7 @@ renderSymbols();
   if (!P.errors.length) return;
   document.getElementById("errors-section").innerHTML =
     `<h2 style="font-size:15px;margin:0 0 10px;">Errors (${P.errors.length})</h2>` +
-    P.errors.map(e => `<div class="error-card"><b>${esc(e.symbol)}</b>${e.name ? " " + esc(e.name) : ""}: ${esc(e.error_msg || "unknown error")}</div>`).join("");
+    P.errors.map(e => `<div class="error-card"><b>${esc(e.symbol)}</b>${e.name ? " " + esc(e.name) : ""}: ${esc(e.status || "error")} &mdash; ${esc(e.error_msg || "unknown error")}</div>`).join("");
 })();
 
 (function renderHeader() {

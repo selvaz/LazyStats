@@ -1448,10 +1448,12 @@ def _series_fit_autos(
         labels = [f"State {i}" for i in range(S)]
 
     state = res.viterbi_path_.astype(int)
+    if S == 1:
+        high_state = None
     highvol = (state == high_state).astype(int)
 
     gamma = np.asarray(res.gamma_, dtype=float)
-    prob_hv = gamma[:, high_state]
+    prob_hv = gamma[:, high_state] if high_state is not None else np.zeros(len(state))
 
     return {
         "selection": out["selection"],
@@ -1533,8 +1535,10 @@ def fit_autos_Y(
             labels = [f"State {i}" for i in range(S)]
 
         state = res.viterbi_path_.astype(int)
+        if S == 1:
+            high_state = None
         highvol = (state == high_state).astype(int)
-        prob_hv = res.gamma_[:, high_state]
+        prob_hv = res.gamma_[:, high_state] if high_state is not None else np.zeros(len(state))
 
         gamma = np.asarray(res.gamma_, dtype=float)
 

@@ -71,6 +71,7 @@ def symbol_returns(
     *,
     start: str = "",
     end: str = "",
+    market_db: str | None = None,
 ) -> SymbolReturns:
     """Load one symbol's daily log returns for fitting.
 
@@ -85,6 +86,7 @@ def symbol_returns(
         instrument: Symbol or canonical id.
         start: Inclusive ISO date, or empty for all available history.
         end: Inclusive ISO date, or empty for the latest available.
+        market_db: Explicit read-only HUB path, or the hub's configured default.
 
     Returns:
         The symbol's returns with missing observations dropped.
@@ -95,7 +97,9 @@ def symbol_returns(
             empty series would produce a model of nothing and persist it.
     """
     symbol = bare_symbol(instrument)
-    dataset: ReturnDataset = load_returns([symbol], start=start, end=end, frequency="D")
+    db_kwargs = {"db_path": market_db} if market_db is not None else {}
+    dataset: ReturnDataset = load_returns([symbol], start=start, end=end, frequency="D",
+                                          **db_kwargs)
 
     if not dataset.instruments:
         raise ValueError(f"the hub returned no series for {symbol!r}")
@@ -211,6 +215,7 @@ def fit_symbol(
     n_starts: int = 20,
     random_state: int = 123,
     with_chart: bool = False,
+    market_db: str | None = None,
 ) -> dict[str, Any]:
     """Fit a regime model to one symbol's daily returns.
 
@@ -231,6 +236,7 @@ def fit_symbol(
             is possible only *here*, because it needs the fitted model, which
             exists nowhere else — the caller receives a string it can pass on,
             never the model.
+        market_db: Explicit read-only HUB path, or the hub's configured default.
 
     Returns:
         ``symbol``, the fitted ``diagnostics``, the trading ``dates`` and one
@@ -248,7 +254,7 @@ def fit_symbol(
 
     from lazystats.regimes import MSRegimeEngine
 
-    returns = symbol_returns(instrument, start=start, end=end)
+    returns = symbol_returns(instrument, start=start, end=end, market_db=market_db)
     frame = pd.DataFrame(
         {returns.symbol: list(returns.values)},
         index=pd.to_datetime(list(returns.dates)),

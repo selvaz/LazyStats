@@ -784,7 +784,7 @@ def _series_to_dict(
     fitted against, not a global/unrelated column index.
     """
     S          = int(res.S)
-    high_state = S - 1   # vol-ascending order guaranteed
+    high_state = S - 1 if S > 1 else None  # a single state has no high-vol alternative
     labels     = regime_labels_from_S(S)
     state      = res.viterbi_path_.astype(int)
     gamma      = np.asarray(res.gamma_, dtype=float)
@@ -807,7 +807,8 @@ def _series_to_dict(
         "labels":            labels,
         "states":            state.tolist(),
         "high_vol_flag":     (state == high_state).astype(int).tolist(),
-        "prob_high_vol":     gamma[:, high_state].tolist(),
+        "prob_high_vol":     gamma[:, high_state].tolist() if high_state is not None
+                             else np.zeros(len(state)).tolist(),
         "state_probs":       gamma.tolist(),
         "regime_stats":      regime_stats,
         "transition_matrix": res.transmat_.tolist(),
@@ -1448,14 +1449,14 @@ def get_current_regime(
 
     s_data      = resolved["series"][series_name]
     S           = int(s_data["S"])
-    high_state  = S - 1
+    high_state  = S - 1 if S > 1 else None
     cur_state   = int(s_data["states"][-1])
     cur_label   = s_data["labels"][cur_state]
     prob_cur    = float(s_data["state_probs"][-1][cur_state])
-    prob_hv     = float(s_data["prob_high_vol"][-1])
+    prob_hv     = float(s_data["prob_high_vol"][-1]) if S > 1 else 0.0
     stats       = s_data["regime_stats"][cur_state]
     A           = s_data["transition_matrix"]
-    trans_to_hv = float(A[cur_state][high_state])
+    trans_to_hv = float(A[cur_state][high_state]) if high_state is not None else 0.0
 
     # When did the current regime start? Derive from the Viterbi path + dates.
     states  = s_data["states"]

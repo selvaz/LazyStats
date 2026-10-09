@@ -25,11 +25,14 @@ def load_returns(
     start: str = "",
     end: str = "",
     frequency: str = "D",
+    db_path: str | None = None,
 ) -> ReturnDataset:
     """Load log returns for one or more instruments from the hub.
 
     instruments: comma-separated string or list; bare symbols are canonicalised
     to ``ticker:<SYM>``. Only the ticker domain is supported.
+    db_path: Explicit HUB file for the hub's read-only reader; defaults to its
+        configured database when omitted.
     """
     if frequency not in ("D", "W", "M", "Q"):
         raise ValueError("frequency must be one of D, W, M, Q")
@@ -61,8 +64,9 @@ def load_returns(
         raise ValueError("no instruments provided")
 
     symbols = [iid.key for iid in parsed]
+    db_kwargs = {"db_path": db_path} if db_path is not None else {}
     frame, metadata = extract.extract_returns(
-        symbols, start=start or None, end=end or None, frequency=frequency
+        symbols, start=start or None, end=end or None, frequency=frequency, **db_kwargs
     )
     labels = {iid.key: str(iid) for iid in parsed}
     rows: list[dict[str, Any]] = []
