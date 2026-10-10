@@ -63,6 +63,25 @@ class TestProductionIsDeclaredNotGuessed:
 class TestReturnsBoundary:
     """Needs the private market-data-hub package, like the contract tests."""
 
+    @pytest.fixture(autouse=True)
+    def synthetic_hub(self, monkeypatch):
+        """Exercise the adapter without resolving the installed hub's live DB."""
+        self._hub_or_skip()
+        import pandas as pd
+        from market_data_hub import extract
+
+        def synthetic_returns(symbols, *, start=None, end=None, frequency="D", **kwargs):
+            dates = pd.bdate_range("2024-01-01", "2024-03-31")
+            frame = pd.DataFrame({s: [0.001 * (i % 7 - 3) for i in range(len(dates))]
+                                  for s in symbols if s == "GLD"}, index=dates)
+            if start:
+                frame = frame.loc[start:]
+            if end:
+                frame = frame.loc[:end]
+            return frame, {"source": "synthetic test fixture"}
+
+        monkeypatch.setattr(extract, "extract_returns", synthetic_returns)
+
     @staticmethod
     def _hub_or_skip():
         pytest.importorskip("market_data_hub")
@@ -110,6 +129,22 @@ class TestReturnsBoundary:
 
 
 class TestSymbolReturnsShape:
+    def test_explicit_market_db_reaches_the_hub_adapter(self, monkeypatch):
+        from lazystats.models import ReturnDataset
+        from lazystats.regimes import estimation
+
+        captured = {}
+
+        def load(instruments, **kwargs):
+            captured.update(kwargs)
+            return ReturnDataset(instruments=["ticker:GLD"],
+                                 rows=[{"date": "2026-10-01", "ticker:GLD": 0.01}],
+                                 metadata={})
+
+        monkeypatch.setattr(estimation, "load_returns", load)
+        assert symbol_returns("GLD", market_db="synthetic.duckdb").values == (0.01,)
+        assert captured["db_path"] == "synthetic.duckdb"
+
     def test_length_is_the_number_of_observations(self):
         r = SymbolReturns(symbol="GLD", dates=("2024-01-02",), values=(0.01,))
         assert len(r) == 1

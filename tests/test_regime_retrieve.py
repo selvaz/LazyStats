@@ -84,6 +84,19 @@ class TestAStoredFitComesBackWhole:
 
 
 class TestHalfAFitIsNoFit:
+    @pytest.mark.parametrize("status", ["timeout", "unknown", None])
+    def test_non_ok_status_is_not_a_fit_even_with_statistics(self, depot, status):
+        from lazystats.regimes.retrieve import latest_regime_row
+
+        store_fit(depot)
+        row = latest_regime_row(depot, KEY)
+        depot.save(kind="regime", produced_by=PRODUCED_BY, instruments=["GLD"],
+                   payload={**diagnostics(), "status": status},
+                   provenance={"source": PROVENANCE_SOURCE}, cadence="stable",
+                   series_key=KEY, result_id=row["result_id"])
+        assert latest_regime_row(depot, KEY) is None
+        assert load_window_fit(depot, series_key=KEY, window="full") is None
+
     def test_a_series_never_fitted_is_absent(self, depot):
         assert load_window_fit(depot, series_key="regime:NOPE", window="full") is None
 
