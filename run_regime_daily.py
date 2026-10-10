@@ -44,7 +44,7 @@ from lazystats.regimes.estimation import (
 from lazystats.regimes.fit_process import (
     DEFAULT_FIT_TIMEOUT_SECONDS,
     FitTimeout,
-    run_fit_in_process,
+    FitWorker,
 )
 from lazystats.regimes.persist import regime_changed, write_failure, write_fit
 from lazystats.regimes.report import Revision, SymbolReport
@@ -196,6 +196,11 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
 
     def _fit_all(bundle: dict, depot: ResultDepot, outcomes: list[dict],
                  entries: list[SymbolReport]) -> None:
+        with FitWorker() as worker:
+            _fit_symbols(bundle, depot, outcomes, entries, worker)
+
+    def _fit_symbols(bundle: dict, depot: ResultDepot, outcomes: list[dict],
+                     entries: list[SymbolReport], worker: FitWorker) -> None:
         for symbol in bundle["symbols"]:
             key = series_key(
                 symbol,
@@ -204,7 +209,7 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                 variant=bundle["variant"],
             )
             try:
-                fitted = run_fit_in_process(
+                fitted = worker.fit(
                     symbol,
                     timeout_seconds=fit_timeout_seconds,
                     fit_function=fit_function,

@@ -9,6 +9,14 @@ def fake_fit(symbol, *, marker=None, **kwargs):
     if symbol == "HANG":
         while True:
             pass  # CPU-bound, rather than an interruptible sleep
+    if symbol == "HOLD_GIL":
+        import ctypes
+        import sys
+
+        if sys.platform == "win32":
+            ctypes.PyDLL("kernel32").Sleep(60_000)
+        else:
+            ctypes.PyDLL(None).sleep(60)
     if symbol == "ERROR":
         raise ValueError("bad synthetic returns")
     if symbol == "CRASH":
@@ -23,3 +31,9 @@ def fake_fit(symbol, *, marker=None, **kwargs):
 
 def large_fit(symbol, **kwargs):
     return {"symbol": symbol, "chart": "x" * 2_000_000}
+
+
+def recording_fit(symbol, **kwargs):
+    with Path(os.environ["LAZYSTATS_TEST_PID_LOG"]).open("a", encoding="utf-8") as stream:
+        stream.write(f"{os.getpid()}\n")
+    return fake_fit(symbol, **kwargs)

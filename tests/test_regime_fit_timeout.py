@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import multiprocessing
 import os
 import time
 from dataclasses import replace
@@ -13,6 +12,7 @@ import pytest
 
 from lazystats.regimes.config import RegimeConfig
 from tests.fit_doubles import fake_fit, large_fit
+from tests.test_regime_worker_review import _alive
 
 
 def runner():
@@ -27,7 +27,6 @@ def test_hanging_child_is_reaped_within_limit(tmp_path):
     from lazystats.regimes import fit_process
 
     marker = tmp_path / "pid"
-    before = {p.pid for p in multiprocessing.active_children()}
     started = time.monotonic()
     with pytest.raises(fit_process.FitTimeout):
         fit_process.run_fit_in_process(
@@ -35,7 +34,7 @@ def test_hanging_child_is_reaped_within_limit(tmp_path):
     assert time.monotonic() - started < 12  # includes at most one second of reap grace
     assert marker.exists(), "the double must actually start before timing out"
     assert int(marker.read_text()) != os.getpid()
-    assert {p.pid for p in multiprocessing.active_children()} == before
+    assert not _alive(int(marker.read_text()))
 
 
 def test_success_and_large_result_cross_process_boundary(tmp_path):

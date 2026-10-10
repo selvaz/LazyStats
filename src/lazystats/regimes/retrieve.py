@@ -53,7 +53,7 @@ def latest_regime_row(
         row = depot.load(entry["result_id"])
         if row is None:
             continue
-        if row["payload"].get("status") == "error":
+        if row["payload"].get("status") != "ok":
             return None
         return row
     return None
