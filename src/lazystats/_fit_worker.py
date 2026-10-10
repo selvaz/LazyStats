@@ -67,11 +67,13 @@ def main() -> int:
     protected = json.loads(handshake)["job_protected"]
     guardian = None
     if not protected:
+        creationflags = 0
+        if sys.platform == "win32":
+            creationflags = subprocess.CREATE_NO_WINDOW
         guardian = subprocess.Popen(
             [sys.executable, "-m", "lazystats._fit_worker", "--parent-pid", str(args.parent_pid),
              "--watch-worker", str(os.getpid())], stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, close_fds=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+            stdout=subprocess.DEVNULL, close_fds=True, creationflags=creationflags)
     try:
         # Keep stdin reads on this thread: a concurrent blocking CRT read can
         # stall native scientific-library initialization on Windows. The job

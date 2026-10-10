@@ -21,6 +21,8 @@ class WindowsJob:
 
 
 def _windows_api() -> Any:
+    if sys.platform != "win32":
+        raise OSError("the Windows API is only available on Windows")
     dll = ctypes.WinDLL("kernel32", use_last_error=True)
     dll.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     dll.OpenProcess.restype = wintypes.HANDLE
@@ -79,6 +81,21 @@ def kill_on_close_job(pid: int) -> WindowsJob | None:
             dll.CloseHandle(process)
 
 
+def _posix_alive(pid: int, proc_root: str = "/proc") -> bool:
+    """Alive and not a zombie: a killed but unreaped parent still answers
+    ``os.kill(pid, 0)``, so read its state where ``/proc`` exists."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        with open(f"{proc_root}/{pid}/stat", encoding="ascii", errors="replace") as stat:
+            state = stat.read().rpartition(")")[2].split()[0]
+    except (OSError, IndexError):
+        return True
+    return state not in ("Z", "X")
+
+
 def watch_parent(parent_pid: int, worker_pid: int) -> None:
     """Independent process: kill even a worker whose fit holds the GIL.
 
@@ -103,12 +120,7 @@ def watch_parent(parent_pid: int, worker_pid: int) -> None:
             if worker:
                 dll.CloseHandle(worker)
     else:
-        def alive(pid: int) -> bool:
-            try:
-                os.kill(pid, 0)
-                return True
-            except ProcessLookupError:
-                return False
+        alive = _posix_alive
 
         while alive(worker_pid):
             if not alive(parent_pid):
