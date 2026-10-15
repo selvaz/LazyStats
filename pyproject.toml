@@ -58,7 +58,7 @@ review = ["pydantic>=2"]
 # package, not part of it: `import lazystats` pulls nothing, and the library
 # itself still never imports lazybridge. Running that script does, so the
 # script's dependency is declared instead of assumed present.
-plans = ["lazybridge>=1.0"]
+plans = ["lazybridge>=1.8.1"]
 
 test = ["lazystats[regimes]", "lazystats[regression]", "lazystats[review]",
         "lazystats[plans]",
@@ -70,7 +70,7 @@ dev = ["lazystats[test]", "ruff>=0.6", "mypy>=1.10"]
 # dependency-confusion rationale as the datahub.py runtime import (not a
 # PyPI extra, market-data-hub is not on PyPI). Opt-in: the default test
 # suite skips these tests when market-data-hub isn't installed.
-contract = ["market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@v0.2.0"]
+contract = ["market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@v0.2.1"]
 
 [tool.hatch.metadata]
 # Required for the `contract` extra's direct Git reference: market-data-hub
