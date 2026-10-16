@@ -292,32 +292,7 @@ class TestTelegramDelivery:
 
         sent = {}
 
-        class FakeClient:
-            @classmethod
-            def from_token(cls, token):
-                sent["token"] = token
-                return cls()
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-            def send_message(self, *, chat_id, text):
-                sent["text"] = text
-
-            def send_document(self, *, chat_id, document, filename, caption):
-                sent["document"] = document
-                sent["filename"] = filename
-
-        module = types.ModuleType("lazytools.connectors.telegram")
-        module.TelegramClient = FakeClient
-        package = types.ModuleType("lazytools")
-        connectors = types.ModuleType("lazytools.connectors")
-        monkeypatch.setitem(sys.modules, "lazytools", package)
-        monkeypatch.setitem(sys.modules, "lazytools.connectors", connectors)
-        monkeypatch.setitem(sys.modules, "lazytools.connectors.telegram", module)
+        install_fake_telegram(monkeypatch, sent)
 
         code = runner.send_telegram(report, {"symbols": 109, "fitted": 109,
                                              "failed": 0, "points_written": 4816},
@@ -326,6 +301,106 @@ class TestTelegramDelivery:
         assert sent["document"] == b"<html>chart</html>"
         assert sent["filename"] == "hmm_regime_report_20260814.html"
         assert "109" in sent["text"] and "2026-08-14" in sent["text"]
+        assert sent["timeout"] == runner.UPLOAD_TIMEOUT_S
+
+    def test_a_timed_out_upload_is_retried_and_the_summary_sent_once(self, tmp_path,
+                                                                     monkeypatch):
+        """15 October: the 13 MB chart upload timed out and the whole run was
+        marked failed although every fit had been written."""
+        runner = load_runner()
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+        monkeypatch.setattr(runner.time, "sleep", lambda seconds: None)
+        report = tmp_path / "hmm_regime_report_20261015.html"
+        report.write_bytes(b"<html>chart</html>")
+        sent = {"fail_uploads": 2}
+        install_fake_telegram(monkeypatch, sent)
+
+        code = runner.send_telegram(report, {"symbols": 1, "fitted": 1, "failed": 0,
+                                             "points_written": 1},
+                                    window="full", as_of=date(2026, 10, 15))
+        assert code == 0
+        assert sent["uploads"] == 3
+        assert sent["messages"] == 1
+
+    def test_upload_gives_up_after_the_last_attempt(self, tmp_path, monkeypatch):
+        runner = load_runner()
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+        monkeypatch.setattr(runner.time, "sleep", lambda seconds: None)
+        report = tmp_path / "hmm_regime_report_20261015.html"
+        report.write_bytes(b"x")
+        sent = {"fail_uploads": runner.UPLOAD_ATTEMPTS}
+        install_fake_telegram(monkeypatch, sent)
+
+        with pytest.raises(RuntimeError, match="timed out"):
+            runner.send_telegram(report, {"symbols": 1, "fitted": 1, "failed": 0,
+                                          "points_written": 1},
+                                 window="full", as_of=date(2026, 10, 15))
+        assert sent["uploads"] == runner.UPLOAD_ATTEMPTS
+
+    def test_an_api_refusal_is_not_retried(self, tmp_path, monkeypatch):
+        runner = load_runner()
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+        monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+        report = tmp_path / "hmm_regime_report_20261015.html"
+        report.write_bytes(b"x")
+        sent = {"refuse": True}
+        install_fake_telegram(monkeypatch, sent)
+
+        with pytest.raises(RuntimeError, match="Request Entity Too Large"):
+            runner.send_telegram(report, {"symbols": 1, "fitted": 1, "failed": 0,
+                                          "points_written": 1},
+                                 window="full", as_of=date(2026, 10, 15))
+        assert sent["uploads"] == 1
+
+
+def install_fake_telegram(monkeypatch, sent: dict) -> None:
+    """A stand-in ``lazytools.connectors.telegram`` that records what was sent.
+
+    ``sent["fail_uploads"]`` uploads time out first; ``sent["refuse"]`` makes
+    every upload an API refusal.
+    """
+
+    class FakeAPIError(RuntimeError):
+        pass
+
+    class FakeClient:
+        @classmethod
+        def from_token(cls, token, timeout=30.0):
+            sent["token"] = token
+            sent["timeout"] = timeout
+            return cls()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def send_message(self, *, chat_id, text):
+            sent["messages"] = sent.get("messages", 0) + 1
+            sent["text"] = text
+
+        def send_document(self, *, chat_id, document, filename, caption):
+            sent["uploads"] = sent.get("uploads", 0) + 1
+            if sent.get("refuse"):
+                raise FakeAPIError("Telegram API call 'sendDocument' failed: "
+                                   "Request Entity Too Large")
+            if sent["uploads"] <= sent.get("fail_uploads", 0):
+                raise RuntimeError("Telegram API call 'sendDocument' failed: "
+                                   "The write operation timed out")
+            sent["document"] = document
+            sent["filename"] = filename
+
+    module = types.ModuleType("lazytools.connectors.telegram")
+    module.TelegramClient = FakeClient
+    module.TelegramAPIError = FakeAPIError
+    package = types.ModuleType("lazytools")
+    connectors = types.ModuleType("lazytools.connectors")
+    monkeypatch.setitem(sys.modules, "lazytools", package)
+    monkeypatch.setitem(sys.modules, "lazytools.connectors", connectors)
+    monkeypatch.setitem(sys.modules, "lazytools.connectors.telegram", module)
 
 
 # --------------------------------------------------------------------- #
