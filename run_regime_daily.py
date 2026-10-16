@@ -27,6 +27,7 @@ import base64
 import json
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -444,6 +445,11 @@ def decode_bundle(raw: str) -> dict:
         ) from exc
 
 
+UPLOAD_TIMEOUT_S = 300.0
+UPLOAD_ATTEMPTS = 3
+UPLOAD_RETRY_DELAY_S = 30
+
+
 def send_telegram(report: Path, summary: dict, *, window: str, as_of: date) -> int:
     """Deliver the day's regime report, or say precisely why it could not be.
 
@@ -462,7 +468,7 @@ def send_telegram(report: Path, summary: dict, *, window: str, as_of: date) -> i
               file=sys.stderr)
         return 2
 
-    from lazytools.connectors.telegram import TelegramClient
+    from lazytools.connectors.telegram import TelegramAPIError, TelegramClient
 
     text = (
         f"HMM regime monitor — {as_of.isoformat()} (window '{window}')\n"
@@ -470,10 +476,27 @@ def send_telegram(report: Path, summary: dict, *, window: str, as_of: date) -> i
         f"{summary['failed']} failed\n"
         f"{summary['points_written']} readings written"
     )
-    with TelegramClient.from_token(token) as client:
+    # The chart report carries ~110 embedded PNGs (about 13 MB): the client's
+    # default 30 s timeout was enough most days, and on 15 October it was not.
+    # Losing an hour and a half of fitting to one slow upload is the failure
+    # this guards against, so the upload gets a long timeout and a few tries.
+    # Only transport errors are retried; an API refusal will not change.
+    document = report.read_bytes()
+    with TelegramClient.from_token(token, timeout=UPLOAD_TIMEOUT_S) as client:
         client.send_message(chat_id=chat_id, text=text)
-        client.send_document(chat_id=chat_id, document=report.read_bytes(),
-                             filename=report.name, caption="HMM regime report (charts)")
+        for attempt in range(1, UPLOAD_ATTEMPTS + 1):
+            try:
+                client.send_document(chat_id=chat_id, document=document,
+                                     filename=report.name, caption="HMM regime report (charts)")
+                break
+            except TelegramAPIError:
+                raise
+            except RuntimeError as exc:
+                if attempt == UPLOAD_ATTEMPTS:
+                    raise
+                print(f"Telegram upload attempt {attempt}/{UPLOAD_ATTEMPTS} failed ({exc}); "
+                      f"retrying in {UPLOAD_RETRY_DELAY_S * attempt} s.", file=sys.stderr)
+                time.sleep(UPLOAD_RETRY_DELAY_S * attempt)
     print("Sent Telegram summary and report.")
     return 0
 
