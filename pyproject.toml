@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lazystats"
-version = "0.3.1"
+version = "0.3.2"
 description = "Pure statistical library of the LazyBridge ecosystem — core statistics, models and hub-backed I/O. The library itself never imports lazybridge and does no LLM wrapping (that lives in LazyTools); the shipped runners compose it into a deterministic Plan and ask for lazybridge explicitly."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -70,7 +70,7 @@ dev = ["lazystats[test]", "ruff>=0.6", "mypy>=1.10"]
 # dependency-confusion rationale as the datahub.py runtime import (not a
 # PyPI extra, market-data-hub is not on PyPI). Opt-in: the default test
 # suite skips these tests when market-data-hub isn't installed.
-contract = ["market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@v0.2.1"]
+contract = ["market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@v0.3.0"]
 
 [tool.hatch.metadata]
 # Required for the `contract` extra's direct Git reference: market-data-hub
