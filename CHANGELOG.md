@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.8] — 2026-10-31
+
 ### Fixed
 - Regime fit worker: a result file briefly locked by Windows right after the child's atomic replace is retried within the fit timeout instead of failing the fit ("worker transport failed: Permission denied", Regime_8y 30/10).
 
