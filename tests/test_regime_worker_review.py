@@ -193,3 +193,25 @@ def test_daily_symbol_loop_reuses_one_worker_and_closes_it(tmp_path, monkeypatch
     pids = marker.read_text().splitlines()
     assert len(pids) == 3 and len(set(pids)) == 1
     assert not _alive(int(pids[0]))
+
+
+def test_result_briefly_locked_after_replace_is_retried(monkeypatch):
+    # 30/10 Regime_8y: Windows denied the open right after the child's atomic replace.
+    from lazystats.regimes.fit_process import FitWorker
+
+    real_read = Path.read_text
+    denied = []
+
+    def flaky_read(self, *args, **kwargs):
+        if self.name.startswith("result-") and not denied:
+            denied.append(self.name)
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read)
+    with FitWorker() as worker:
+        assert worker.fit("BIL", fit_function=fake_fit, timeout_seconds=30)["symbol"] == "BIL"
+        alive = worker.process
+        assert worker.fit("SHY", fit_function=fake_fit, timeout_seconds=30)["symbol"] == "SHY"
+        assert worker.process is alive
+    assert denied
