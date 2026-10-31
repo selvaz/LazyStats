@@ -112,7 +112,13 @@ class FitWorker:
                     self._stop()
                     raise FitTimeout(f"{instrument}: fit exceeded {timeout_seconds:g}s")
                 if result_path.is_file():
-                    record = json.loads(result_path.read_text(encoding="utf-8"))
+                    try:
+                        record = json.loads(result_path.read_text(encoding="utf-8"))
+                    except PermissionError:
+                        # Windows can deny the open for a moment right after the child's
+                        # atomic replace (30/10 Regime_8y); retry within the fit timeout.
+                        time.sleep(0.05)
+                        continue
                     if "error" in record:
                         raise FitProcessError(record["error"])
                     return record["result"]
