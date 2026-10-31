@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lazystats"
-version = "0.3.7"
+version = "0.3.8"
 description = "Pure statistical library of the LazyBridge ecosystem — core statistics, models and hub-backed I/O. The library itself never imports lazybridge and does no LLM wrapping (that lives in LazyTools); the shipped runners compose it into a deterministic Plan and ask for lazybridge explicitly."
 readme = "README.md"
 requires-python = ">=3.11"
