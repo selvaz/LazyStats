@@ -70,7 +70,7 @@ dev = ["lazystats[test]", "ruff>=0.6", "mypy>=1.10"]
 # dependency-confusion rationale as the datahub.py runtime import (not a
 # PyPI extra, market-data-hub is not on PyPI). Opt-in: the default test
 # suite skips these tests when market-data-hub isn't installed.
-contract = ["market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@v0.3.26"]
+contract = ["market-data-hub @ git+https://github.com/selvaz/market-data-hub.git@v0.3.28"]
 
 [tool.hatch.metadata]
 # Required for the `contract` extra's direct Git reference: market-data-hub
