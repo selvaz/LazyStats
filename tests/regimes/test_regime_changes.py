@@ -6,7 +6,38 @@ import numpy as np
 import pytest
 
 from lazystats.regimes import fit_regimes, get_current_regime, get_regime_changes
-from lazystats.regimes.tools import _swrite
+from lazystats.regimes.core import FitResult
+from lazystats.regimes.tools import _series_to_dict, _swrite
+
+
+def test_regime_statistics_name_variance_and_standard_deviation_exactly() -> None:
+    """A known covariance must not be exposed under a volatility label."""
+    result = FitResult(
+        S=1, cov_type="diag", shared_mean=False, seed=0,
+        converged=True, n_iter=1, loglik=0.0, bic=0.0,
+        startprob_=np.array([1.0]), transmat_=np.array([[0.9]]),
+        means_=np.array([[0.0]]), covars_=np.array([[0.0004]]),
+        gamma_=np.ones((4, 1)), viterbi_path_=np.zeros(4, dtype=int),
+    )
+
+    series = _series_to_dict(
+        "SPY", result, np.array([-0.02, 0.02, -0.02, 0.02]),
+        periods_per_year=252,
+    )
+    stats = series["regime_stats"][0]
+
+    assert stats["variance"] == pytest.approx(0.0004)
+    assert stats["volatility"] == pytest.approx(0.02)
+    assert stats["volatility_annualised"] == pytest.approx(0.02 * np.sqrt(252))
+    assert "vol" not in stats
+
+    current = get_current_regime(
+        fit_result={"series": {"SPY": series}}, series_name="SPY")
+    assert current["current_variance"] == pytest.approx(0.0004)
+    assert current["current_volatility"] == pytest.approx(0.02)
+    assert current["current_volatility_annualised"] == pytest.approx(
+        round(0.02 * np.sqrt(252), 6))
+    assert "current_vol" not in current
 
 
 def _fit_result(states, index=None):
@@ -42,8 +73,8 @@ def test_joint_diag_reports_distinct_per_series_vol() -> None:
         S_min=2, S_max=2, n_starts=8, random_state=42,
     )
 
-    vol_a = [rs["vol"] for rs in out["series"]["A"]["regime_stats"]]
-    vol_b = [rs["vol"] for rs in out["series"]["B"]["regime_stats"]]
+    vol_a = [rs["volatility"] for rs in out["series"]["A"]["regime_stats"]]
+    vol_b = [rs["volatility"] for rs in out["series"]["B"]["regime_stats"]]
 
     assert vol_a != vol_b, "A and B must not report identical per-state vol"
     for va, vb in zip(vol_a, vol_b):

@@ -5,6 +5,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Regime state statistics now expose explicit per-period `variance` and
+  `volatility` (standard deviation), plus `volatility_annualised` when the fit's
+  observation frequency is known.
+- Renamed every misleading regime dispersion key: state `vol` to `variance` and
+  `volatility`; `current_vol` to `current_variance` and `current_volatility`;
+  `mean_vol_by_window` to `volatility_by_window`. The annualised current value,
+  when available, is `current_volatility_annualised`.
+
 ## [0.3.13] — 2026-11-20
 
 ### Changed

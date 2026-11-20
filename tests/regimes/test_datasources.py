@@ -14,7 +14,7 @@ import pytest
 
 import lazystats.regimes.datasources.datahub as datahub_mod
 from lazystats.regimes import load_from_datahub
-from lazystats.regimes.tools import _sread, _resolve_data, fit_regimes
+from lazystats.regimes.tools import _resolve_data, _sread, fit_regimes
 
 from tests.regimes.conftest import make_multivariate_df
 
@@ -74,6 +74,7 @@ def test_load_from_datahub_return_dict(monkeypatch, synthetic_returns_df):
     assert out["frequency"] == "W"
     assert out["field"] == "adj_close"
     assert len(out["date_range"]) == 2
+    assert _sread("dh_test")["periods_per_year"] == 52.0
 
     # kwargs were forwarded to extract_returns
     assert captured["symbols"] == ["SPY", "TLT"]
@@ -118,8 +119,8 @@ def test_payload_matches_load_time_series_shape(monkeypatch, synthetic_returns_d
     load_from_datahub(["SPY", "TLT"], data_key="dh_shape")
 
     payload = _sread("dh_shape")
-    # Exact payload shape that load_time_series stores.
-    assert set(payload.keys()) == {"Y", "columns", "index"}
+    assert set(payload.keys()) == {
+        "Y", "columns", "index", "frequency", "periods_per_year"}
     assert isinstance(payload["Y"], np.ndarray)
     assert payload["Y"].dtype == np.float64
     assert payload["Y"].shape == (len(df), 2)

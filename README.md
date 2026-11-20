@@ -71,6 +71,23 @@ lasso = fit_lasso(ds, "ticker:SPY")          # alpha=None -> LassoCV
 print(ols["coefficients"], ridge["alpha"], lasso["selected_regressors"])
 ```
 
+## Regime dispersion fields
+
+Gaussian regime fits expose the fitted covariance without calling it volatility.
+Each entry in `series[...]["regime_stats"]` contains:
+
+* `variance`: the fitted variance for one observation period;
+* `volatility`: the square root of `variance`, also for one observation period;
+* `volatility_annualised`: the standard deviation scaled by the square root of
+  observations per year, only when that frequency is known.
+
+Pass `periods_per_year=252` (daily), `52` (weekly), or another appropriate value
+to `fit_regimes` for inline/file data. `load_from_datahub` records the standard
+annualisation factor for daily, business-day, weekly, monthly, quarterly, and
+annual frequencies automatically. `get_current_regime` uses the corresponding
+`current_variance`, `current_volatility`, and optional
+`current_volatility_annualised` keys.
+
 ## Install
 
 LazyStats is distributed from GitHub (only LazyBridge is on PyPI). These
