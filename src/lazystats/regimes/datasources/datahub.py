@@ -7,7 +7,8 @@ A thin, depot-aware data-source loader that pulls a returns matrix from the
 depot using the EXACT payload shape that
 :func:`lazystats.regimes.tools.load_time_series` writes::
 
-    {"Y": <float ndarray (T, k)>, "columns": [...], "index": [str, ...]}
+    {"Y": <float ndarray (T, k)>, "columns": [...], "index": [str, ...],
+     "frequency": "W", "periods_per_year": 52.0}
 
 so the existing ``fit_regimes(data_key=...)`` tool (and ``RegimeEngine``)
 consume it with no further glue.
@@ -33,6 +34,13 @@ from ..tools import _swrite
 # ``monkeypatch.setattr(lazystats.regimes.datasources.datahub, "extract_returns", ...)``
 # — i.e. patch where the name is looked up.
 extract_returns = None  # type: ignore[assignment]
+
+_PERIODS_PER_YEAR = {"D": 252.0, "B": 252.0, "W": 52.0, "M": 12.0,
+                     "Q": 4.0, "Y": 1.0, "A": 1.0,
+                     # pandas >= 2.2 period-end / period-start aliases
+                     "ME": 12.0, "MS": 12.0, "BM": 12.0, "BME": 12.0, "BMS": 12.0,
+                     "QE": 4.0, "QS": 4.0, "BQ": 4.0, "BQE": 4.0,
+                     "YE": 1.0, "YS": 1.0, "AS": 1.0, "BA": 1.0, "BY": 1.0, "BYE": 1.0}
 
 
 def _get_extract_returns():
@@ -70,8 +78,9 @@ def load_from_datahub(
 
     Calls ``market_data_hub.extract_returns(...)`` to obtain a wide log-returns
     DataFrame (DatetimeIndex, one column per symbol), then writes the SAME
-    payload as :func:`lazystats.regimes.tools.load_time_series` under ``data_key`` so
-    ``fit_regimes(data_key=...)`` can consume it directly.
+    numeric/index payload as :func:`lazystats.regimes.tools.load_time_series` under
+    ``data_key``, with frequency metadata so ``fit_regimes(data_key=...)`` can
+    annualise volatility when appropriate.
 
     Args:
         symbols: One symbol, a list of symbols, or a comma/semicolon-separated
@@ -150,7 +159,14 @@ def load_from_datahub(
     columns: List[str] = list(df.columns)
     index: List[str] = [str(i) for i in df.index]
 
-    _swrite(data_key, {"Y": Y, "columns": columns, "index": index})
+    frequency_code = frequency.upper().split("-")[0]
+    _swrite(data_key, {
+        "Y": Y,
+        "columns": columns,
+        "index": index,
+        "frequency": frequency,
+        "periods_per_year": _PERIODS_PER_YEAR.get(frequency_code),
+    })
 
     # ── Provenance / summary (mirrors load_time_series' return + extras) ────
     date_range: List[str] = []

@@ -40,6 +40,7 @@ SECTIONS
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -130,6 +131,19 @@ except ImportError:
 _MODULE_STORE: Dict[str, Any] = {}   # in-process fallback
 _LAZY_STORE   = None                 # optional Store instance (lazybridge 0.9+)
 
+
+
+def _stored_dispersion(stats: dict) -> tuple:
+    """Return (variance, volatility) for one stored regime_stats entry.
+
+    Fits stored before the variance/volatility split carry only ``vol``, which
+    was the per-period variance; read it as such so stored results keep working.
+    """
+    variance = stats.get("variance", stats.get("vol"))
+    volatility = stats.get("volatility")
+    if volatility is None and variance is not None:
+        volatility = math.sqrt(max(float(variance), 0.0))
+    return variance, volatility
 
 def connect_lazy_store(store) -> None:
     """Attach a lazybridge Store so tool results persist across processes.
@@ -772,6 +786,7 @@ def _resolve_result(fit_result: dict, result_key: str) -> dict:
 
 def _series_to_dict(
     col: str, res: FitResult, Y_col: np.ndarray, reorder_by: str = "vol", series_idx: int = 0,
+    periods_per_year: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Build the per-series output dict shared by fit_regimes and compare_emission_models.
 
@@ -782,25 +797,35 @@ def _series_to_dict(
     wrong index here silently reports another series' variance instead of
     this one's — always pass the index into the SAME matrix ``res`` was
     fitted against, not a global/unrelated column index.
+
+    The covariance diagonal is a per-period variance. Public output names it
+    accordingly and derives per-period standard deviation as ``volatility``.
+    Annualised volatility is emitted only when ``periods_per_year`` is known.
     """
     S          = int(res.S)
     high_state = S - 1 if S > 1 else None  # a single state has no high-vol alternative
     labels     = regime_labels_from_S(S)
     state      = res.viterbi_path_.astype(int)
     gamma      = np.asarray(res.gamma_, dtype=float)
-    vols       = _series_vol_measure(res.covars_, res.cov_type, series_idx)  # (S,) vol for THIS series
+    variances  = _series_vol_measure(res.covars_, res.cov_type, series_idx)
 
     regime_stats = []
     for s in range(S):
         mask = state == s
-        regime_stats.append({
+        variance = float(variances[s])
+        volatility = math.sqrt(max(variance, 0.0))
+        stats = {
             "state":             s,
             "label":             labels[s],
             "mean":              float(np.mean(Y_col[mask])) if mask.any() else 0.0,
-            "vol":               float(vols[s]),
+            "variance":          variance,
+            "volatility":        volatility,
             "occupancy_pct":     float(np.round(gamma[:, s].mean() * 100, 1)),
             "expected_duration": float(np.round(1 / (1 - np.clip(res.transmat_[s, s], 0, 0.9999)), 1)),
-        })
+        }
+        if periods_per_year is not None:
+            stats["volatility_annualised"] = volatility * math.sqrt(periods_per_year)
+        regime_stats.append(stats)
 
     return {
         "S":                 S,
@@ -1188,6 +1213,11 @@ def fit_regimes(
         "Minimum number of regimes to scan (default 1). Use S_min=2 to force "
         "at least two regimes. Must satisfy 1 <= S_min <= S_max.",
     ] = 1,
+    periods_per_year: Annotated[
+        Optional[float],
+        "Observations per year, used only to add volatility_annualised. "
+        "Stored data may supply this as frequency metadata.",
+    ] = None,
 ) -> dict:
     """Fit Gaussian HMM regime detection on financial time series.
 
@@ -1220,6 +1250,8 @@ def fit_regimes(
         shared_mean: True = variance-only regime model.
         sticky: Regime persistence prior (0.80–0.99).
         random_state: Seed.
+        periods_per_year: Observations per year (for example 252 for daily data).
+            When omitted, stored data's frequency metadata is used if available.
 
     Returns:
         dict with keys:
@@ -1228,11 +1260,17 @@ def fit_regimes(
                 apply_regime_params()/regime_params_load() (empty if not stored).
             model, criterion, n_timesteps (str/int): fit metadata.
             series (dict): per series — regime_stats, bic, loglik, current regime summary.
+                Each state reports per-period ``variance`` and ``volatility`` plus
+                ``volatility_annualised`` when periods_per_year is known.
                 NOTE: state_probs (T×S matrix) is stored in the result_key store,
                 not returned here, to keep the response small.
     """
     Y, cols = _resolve_data(data or [], data_key, series_names or [])
     T, k    = Y.shape
+    if periods_per_year is None and data_key:
+        periods_per_year = _sread(data_key).get("periods_per_year")
+    if periods_per_year is not None and periods_per_year <= 0:
+        raise ValueError("periods_per_year must be positive")
 
     fit_mode, cov_type = _resolve_model(model)   # 'panel'/'joint' + diag/full
     rng       = np.random.RandomState(random_state)
@@ -1249,16 +1287,19 @@ def fit_regimes(
             out = fit_with_auto_S(Y[:, j:j+1], random_state=int(rng.randint(0, 2**31-1)),
                                   **{**common, "cov_type": "diag"})
             res = reorder_fitresult(out["final_result"], by="vol", ascending=True)
-            full_result[col] = _series_to_dict(col, res, Y[:, j], series_idx=0)
+            full_result[col] = _series_to_dict(
+                col, res, Y[:, j], series_idx=0, periods_per_year=periods_per_year)
             params_by_series[col] = HMMParams.from_fitresult(res).to_dict()
     else:
         out = fit_with_auto_S(Y, random_state=int(rng.randint(0, 2**31-1)), **common)
         res = reorder_fitresult(out["final_result"], by="vol", ascending=True)
         for j, col in enumerate(cols):
-            full_result[col] = _series_to_dict(col, res, Y[:, j], series_idx=j)
+            full_result[col] = _series_to_dict(
+                col, res, Y[:, j], series_idx=j, periods_per_year=periods_per_year)
         joint_params = HMMParams.from_fitresult(res).to_dict()
 
     full_output = {"model": model, "criterion": criterion, "n_timesteps": T,
+                   "periods_per_year": periods_per_year,
                    "series": full_result,
                    # date/index labels (from the data payload) so downstream
                    # tools can map Viterbi state changes back to dates.
@@ -1435,7 +1476,10 @@ def get_current_regime(
             prob_high_vol (float): posterior probability of the highest-vol regime.
             is_high_vol (bool): True if currently in the highest-vol regime.
             current_mean (float): mean return of current regime.
-            current_vol (float): annualised volatility of current regime.
+            current_variance (float): variance per observation period.
+            current_volatility (float): standard deviation per observation period.
+            current_volatility_annualised (float, optional): annualised standard deviation,
+                present only when the fit knew the number of observations per year.
             expected_duration (float): expected steps remaining in current regime.
             transition_to_high_vol (float): one-step probability of entering high-vol regime.
     """
@@ -1463,7 +1507,7 @@ def get_current_regime(
     index   = resolved.get("index") or [str(i) for i in range(len(states))]
     changes, last_pos = _regime_change_points(states, s_data["labels"], index)
 
-    return {
+    current = {
         "series":                 series_name,
         "current_state":          cur_state,
         "current_label":          cur_label,
@@ -1471,7 +1515,8 @@ def get_current_regime(
         "prob_high_vol":          round(prob_hv,     4),
         "is_high_vol":            cur_state == high_state,
         "current_mean":           round(stats["mean"], 6),
-        "current_vol":            round(stats["vol"],  6),
+        "current_variance":       round(_stored_dispersion(stats)[0], 6),
+        "current_volatility":     round(_stored_dispersion(stats)[1], 6),
         "expected_duration":      stats["expected_duration"],
         "transition_to_high_vol": round(trans_to_hv, 4),
         # how long we've actually been in this regime (vs expected_duration)
@@ -1479,6 +1524,10 @@ def get_current_regime(
         "steps_in_current_regime": len(states) - last_pos,
         "n_changes":              len(changes),
     }
+    if "volatility_annualised" in stats:
+        current["current_volatility_annualised"] = round(
+            stats["volatility_annualised"], 6)
+    return current
 
 
 def get_regime_changes(
@@ -1605,7 +1654,7 @@ def get_regime_summary(
         for st in s_data["regime_stats"]:
             lines.append(
                 f"    [{st['state']}] {st['label']:<18s} | "
-                f"mean={st['mean']:+.4f}  vol={st['vol']:.4f}  "
+                f"mean={st['mean']:+.4f}  volatility={_stored_dispersion(st)[1]:.4f}  "
                 f"occ={st['occupancy_pct']:.1f}%  "
                 f"dur={st['expected_duration']:.1f} steps"
             )
@@ -1666,7 +1715,8 @@ def compare_emission_models(
             bic (float): BIC score — lower is better.
             loglik (float): log-likelihood.
             n_params (int): free parameter count.
-            regime_stats (list[dict]): per-regime mean, vol, occupancy_pct, expected_duration.
+            regime_stats (list[dict]): per-regime mean, per-period variance and volatility,
+                occupancy_pct, and expected_duration.
             warnings (list[str]): quality warnings.
     """
     Y    = _ensure_2d(np.array(data, dtype=float))
@@ -1980,7 +2030,8 @@ def compare_regime_windows(
                 series (dict): per series, same structure as fit_regimes output.
             comparison (dict): per series name:
                 S_by_window (dict): {label: S} — regime count per window.
-                mean_vol_by_window (dict): {label: list[float]} — per-state vol per window.
+                volatility_by_window (dict): {label: list[float]} — per-period standard
+                    deviation for each state and window.
                 persistence_by_window (dict): {label: list[float]} — diag(A) per window.
                 occupancy_by_window (dict): {label: list[float]} — state occupancies per window.
                 bic_by_window (dict): {label: float} — BIC per window.
@@ -2014,7 +2065,7 @@ def compare_regime_windows(
             lbl   = wr["label"]
             s_dat = wr["series"].get(col, {})
             S_by_win[lbl]           = int(s_dat.get("S", 0))
-            mean_vol_by_win[lbl]    = [round(rs["vol"], 6)
+            mean_vol_by_win[lbl]    = [round(_stored_dispersion(rs)[1], 6)
                                        for rs in s_dat.get("regime_stats", [])]
             persistence_by_win[lbl] = [round(float(row[i]), 4)
                                        for i, row in enumerate(
@@ -2025,7 +2076,7 @@ def compare_regime_windows(
 
         comparison[col] = {
             "S_by_window":           S_by_win,
-            "mean_vol_by_window":    mean_vol_by_win,
+            "volatility_by_window":  mean_vol_by_win,
             "persistence_by_window": persistence_by_win,
             "occupancy_by_window":   occupancy_by_win,
             "bic_by_window":         bic_by_win,
