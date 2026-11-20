@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.13] — 2026-11-20
+
+### Changed
+- market-data-hub pinned to v0.4.0 (`contract` extra): default XBRL mapping v3, shared DuckDB connection handle, schema 34. The suite passes against it unchanged.
+
 ## [0.3.12] — 2026-11-14
 
 ### Changed
