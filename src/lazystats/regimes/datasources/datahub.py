@@ -36,7 +36,11 @@ from ..tools import _swrite
 extract_returns = None  # type: ignore[assignment]
 
 _PERIODS_PER_YEAR = {"D": 252.0, "B": 252.0, "W": 52.0, "M": 12.0,
-                     "Q": 4.0, "Y": 1.0, "A": 1.0}
+                     "Q": 4.0, "Y": 1.0, "A": 1.0,
+                     # pandas >= 2.2 period-end / period-start aliases
+                     "ME": 12.0, "MS": 12.0, "BM": 12.0, "BME": 12.0, "BMS": 12.0,
+                     "QE": 4.0, "QS": 4.0, "BQ": 4.0, "BQE": 4.0,
+                     "YE": 1.0, "YS": 1.0, "AS": 1.0, "BA": 1.0, "BY": 1.0, "BYE": 1.0}
 
 
 def _get_extract_returns():

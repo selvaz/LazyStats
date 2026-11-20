@@ -132,6 +132,19 @@ _MODULE_STORE: Dict[str, Any] = {}   # in-process fallback
 _LAZY_STORE   = None                 # optional Store instance (lazybridge 0.9+)
 
 
+
+def _stored_dispersion(stats: dict) -> tuple:
+    """Return (variance, volatility) for one stored regime_stats entry.
+
+    Fits stored before the variance/volatility split carry only ``vol``, which
+    was the per-period variance; read it as such so stored results keep working.
+    """
+    variance = stats.get("variance", stats.get("vol"))
+    volatility = stats.get("volatility")
+    if volatility is None and variance is not None:
+        volatility = math.sqrt(max(float(variance), 0.0))
+    return variance, volatility
+
 def connect_lazy_store(store) -> None:
     """Attach a lazybridge Store so tool results persist across processes.
 
@@ -1502,8 +1515,8 @@ def get_current_regime(
         "prob_high_vol":          round(prob_hv,     4),
         "is_high_vol":            cur_state == high_state,
         "current_mean":           round(stats["mean"], 6),
-        "current_variance":       round(stats["variance"], 6),
-        "current_volatility":     round(stats["volatility"], 6),
+        "current_variance":       round(_stored_dispersion(stats)[0], 6),
+        "current_volatility":     round(_stored_dispersion(stats)[1], 6),
         "expected_duration":      stats["expected_duration"],
         "transition_to_high_vol": round(trans_to_hv, 4),
         # how long we've actually been in this regime (vs expected_duration)
@@ -1641,7 +1654,7 @@ def get_regime_summary(
         for st in s_data["regime_stats"]:
             lines.append(
                 f"    [{st['state']}] {st['label']:<18s} | "
-                f"mean={st['mean']:+.4f}  volatility={st['volatility']:.4f}  "
+                f"mean={st['mean']:+.4f}  volatility={_stored_dispersion(st)[1]:.4f}  "
                 f"occ={st['occupancy_pct']:.1f}%  "
                 f"dur={st['expected_duration']:.1f} steps"
             )
@@ -2052,7 +2065,7 @@ def compare_regime_windows(
             lbl   = wr["label"]
             s_dat = wr["series"].get(col, {})
             S_by_win[lbl]           = int(s_dat.get("S", 0))
-            mean_vol_by_win[lbl]    = [round(rs["volatility"], 6)
+            mean_vol_by_win[lbl]    = [round(_stored_dispersion(rs)[1], 6)
                                        for rs in s_dat.get("regime_stats", [])]
             persistence_by_win[lbl] = [round(float(row[i]), 4)
                                        for i, row in enumerate(

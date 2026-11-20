@@ -13,6 +13,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `volatility`; `current_vol` to `current_variance` and `current_volatility`;
   `mean_vol_by_window` to `volatility_by_window`. The annualised current value,
   when available, is `current_volatility_annualised`.
+- Fits stored before this change (with only `vol`) are still read: `vol` is
+  taken as the per-period variance.
+- Annualisation recognises the pandas 2.2 frequency aliases (`ME`, `QE`, `YE`,
+  `BME`, ...).
 
 ## [0.3.13] — 2026-11-20
 

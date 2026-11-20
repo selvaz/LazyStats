@@ -226,3 +226,19 @@ def test_generate_regime_plots_from_stored_fit(tmp_path):
             generate_regime_plots("inlinefit")
     finally:
         rdb._DB = None
+
+
+def test_stored_dispersion_reads_legacy_vol_as_variance():
+    from lazystats.regimes.tools import _stored_dispersion
+
+    variance, volatility = _stored_dispersion({"vol": 0.0004})
+    assert variance == 0.0004
+    assert abs(volatility - 0.02) < 1e-12
+    assert _stored_dispersion({"variance": 0.0009, "volatility": 0.03}) == (0.0009, 0.03)
+
+
+def test_pandas_period_end_aliases_have_periods_per_year():
+    from lazystats.regimes.datasources.datahub import _PERIODS_PER_YEAR
+
+    for code, expected in {"ME": 12.0, "QE": 4.0, "YE": 1.0, "BME": 12.0}.items():
+        assert _PERIODS_PER_YEAR[code] == expected
