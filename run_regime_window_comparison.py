@@ -229,6 +229,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--market-db", required=True, metavar="PATH",
                    help="The market database the fits were computed from. Never opened: "
                         "it identifies which series to read.")
+    p.add_argument("--market-read-db", metavar="PATH",
+                   help="Accepted for regime-chain compatibility and ignored: this job "
+                        "does not read market prices.")
     p.add_argument("--production-db", required=True, metavar="PATH",
                    help="Which database counts as production, so a staging run reads "
                         "its own namespaced series rather than production's.")
