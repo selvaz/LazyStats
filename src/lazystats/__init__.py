@@ -33,7 +33,7 @@ from lazystats.core import (
 )
 from lazystats.models import ReturnDataset
 
-__version__ = "0.3.13"
+__version__ = "0.3.14"
 
 __all__ = [
     "ReturnDataset",
