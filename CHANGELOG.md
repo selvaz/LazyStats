@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.14] — 2026-11-22
+
 ### Added
 - `run_regime_daily.py` can read prices from a snapshot supplied with
   `--market-read-db` without changing the production identity of its series.
