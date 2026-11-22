@@ -6,6 +6,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `run_regime_daily.py` can read prices from a snapshot supplied with
+  `--market-read-db` without changing the production identity of its series.
 - Regime state statistics now expose explicit per-period `variance` and
   `volatility` (standard deviation), plus `volatility_annualised` when the fit's
   observation frequency is known.

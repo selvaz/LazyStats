@@ -62,7 +62,8 @@ def _window_start(as_of: date, lookback_years: int | None) -> str:
 
 
 def _make_plan_run(cfg: RegimeConfig, *, window: str, as_of: date,
-                   market_db: str, production_db: str):
+                   market_db: str, production_db: str,
+                   market_read_db: str | None = None):
     """Resolve what this run will do, without touching prices or the depot."""
 
     def plan_run(arg: str) -> dict:
@@ -74,6 +75,7 @@ def _make_plan_run(cfg: RegimeConfig, *, window: str, as_of: date,
             "as_of": as_of.isoformat(),
             "symbols": list(cfg.instruments),
             "market_db": market_db,
+            "market_read_db": market_read_db,
             "production_db": production_db,
         }
 
@@ -221,6 +223,8 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                     n_starts=cfg.n_starts,
                     random_state=cfg.random_state,
                     with_chart=report_path is not None,
+                    **({"market_read_db": bundle["market_read_db"]}
+                       if bundle.get("market_read_db") is not None else {}),
                 )
             except Exception as exc:  # one symbol's failure must not end the run
                 status = "timeout" if isinstance(exc, FitTimeout) else "error"
@@ -330,12 +334,14 @@ def _make_persist_report(*, depot_path: str, dry_run: bool):
 
 def build_plan(cfg: RegimeConfig, *, window: str, as_of: date, market_db: str,
                production_db: str, depot_path: str, dry_run: bool,
+               market_read_db: str | None = None,
                report_path: Path | None = None, generated: str = "",
                fit_timeout_seconds: float = DEFAULT_FIT_TIMEOUT_SECONDS) -> Plan:
     """The pipeline: resolve, fit and write, store the run's record, then count."""
     return Plan(
         Step(_make_plan_run(cfg, window=window, as_of=as_of, market_db=market_db,
-                            production_db=production_db), name="plan_run"),
+                            production_db=production_db,
+                            market_read_db=market_read_db), name="plan_run"),
         Step(_make_fit_and_persist(cfg, depot_path=depot_path, dry_run=dry_run,
                                    report_path=report_path, generated=generated,
                                    fit_timeout_seconds=fit_timeout_seconds),
@@ -511,7 +517,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--depot", required=True, metavar="PATH",
                    help="Result depot to write to.")
     p.add_argument("--market-db", required=True, metavar="PATH",
-                   help="The market database the prices come from.")
+                   help="The market database that identifies the fitted series.")
+    p.add_argument("--market-read-db", metavar="PATH",
+                   help="Optional snapshot database to read prices from. Series identity "
+                        "and production detection still use --market-db.")
     p.add_argument("--production-db", required=True, metavar="PATH",
                    help="Which database counts as production. When it differs from "
                         "--market-db the series are namespaced, so a staging run "
@@ -583,6 +592,7 @@ def main() -> int:
         window=args.window,
         as_of=as_of,
         market_db=args.market_db,
+        market_read_db=args.market_read_db,
         production_db=args.production_db,
         depot_path=str(Path(args.depot)),
         dry_run=args.dry_run,

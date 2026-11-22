@@ -116,6 +116,47 @@ def test_job_continues_and_reports_timeout_in_both_reports(tmp_path):
     assert summary["failures"][0]["status"] == "timeout"
 
 
+def test_snapshot_read_path_reaches_worker_without_changing_series_identity(
+        tmp_path, monkeypatch):
+    mod = runner()
+    cfg = RegimeConfig(instruments=("GLD",), windows=(), comparisons=(),
+                       s_max=1, n_starts=1, random_state=123, retro_days=30)
+    calls = []
+
+    class Worker:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def fit(self, symbol, **kwargs):
+            calls.append((symbol, kwargs))
+            return {
+                "symbol": symbol,
+                "dates": ["2026-10-01"],
+                "readings": [{"state": 0, "is_high_vol": False,
+                              "prob_high_vol": 0.0, "state_probs": [1.0]}],
+                "diagnostics": {"n_states": 1, "states": [], "labels": [],
+                                "transmat": [], "n_obs": 1},
+                "chart": None,
+            }
+
+    monkeypatch.setattr(mod, "FitWorker", Worker)
+    step = mod._make_fit_and_persist(
+        cfg, depot_path=str(tmp_path / "depot.sqlite"), dry_run=True,
+        report_path=None, generated="test")
+    result = step(json.dumps({"symbols": ["GLD"], "window": "full", "variant": None,
+                              "start": "", "as_of": "2026-10-01",
+                              "market_db": "production.duckdb",
+                              "market_read_db": "snapshot.duckdb",
+                              "production_db": "production.duckdb"}))
+
+    assert result["outcomes"][0]["series_key"] == "regime:GLD"
+    assert calls[0][1]["market_db"] == "production.duckdb"
+    assert calls[0][1]["market_read_db"] == "snapshot.duckdb"
+
+
 @pytest.mark.parametrize("outcomes, expected", [
     ([{"status": "ok"}], 0),
     ([{"status": "timeout"}, {"status": "ok"}], 2),

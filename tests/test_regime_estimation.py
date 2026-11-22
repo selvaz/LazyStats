@@ -145,6 +145,28 @@ class TestSymbolReturnsShape:
         assert symbol_returns("GLD", market_db="synthetic.duckdb").values == (0.01,)
         assert captured["db_path"] == "synthetic.duckdb"
 
+    def test_market_read_db_is_the_only_path_used_for_prices(self, monkeypatch):
+        from lazystats.models import ReturnDataset
+        from lazystats.regimes import estimation
+
+        captured = {}
+
+        def load(instruments, **kwargs):
+            captured.update(kwargs)
+            return ReturnDataset(instruments=["ticker:GLD"],
+                                 rows=[{"date": "2026-10-01", "ticker:GLD": 0.02}],
+                                 metadata={})
+
+        monkeypatch.setattr(estimation, "load_returns", load)
+        got = symbol_returns("GLD", market_db="production.duckdb",
+                             market_read_db="snapshot.duckdb")
+
+        assert got.values == (0.02,)
+        assert captured["db_path"] == "snapshot.duckdb"
+        assert is_production("production.duckdb", "production.duckdb")
+        assert series_key("GLD", market_db="production.duckdb",
+                          production_db="production.duckdb") == "regime:GLD"
+
     def test_length_is_the_number_of_observations(self):
         r = SymbolReturns(symbol="GLD", dates=("2024-01-02",), values=(0.01,))
         assert len(r) == 1
