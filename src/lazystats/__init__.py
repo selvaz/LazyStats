@@ -19,6 +19,8 @@ Layout:
 LazyRay is frozen and migrates only after numeric + depot equivalence.
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from lazystats.core import (
     PERIODS_PER_YEAR,
     demean,
@@ -33,7 +35,11 @@ from lazystats.core import (
 )
 from lazystats.models import ReturnDataset
 
-__version__ = "0.3.14"
+try:
+    __version__ = version("lazystats")
+except PackageNotFoundError:
+    # Keep source checkouts importable before the distribution is installed.
+    __version__ = "0.3.15"
 
 __all__ = [
     "ReturnDataset",
