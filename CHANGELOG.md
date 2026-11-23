@@ -5,6 +5,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.15] — 2026-11-23
+
+### Added
+- Daily regime runs resume by skipping successful same-day fits unless `--force` is used.
+- Per-symbol deadlines have bounded depot writes, phase timings and a final
+  fitted/skipped/timeout/failure summary.
+- Depot writers use short transactions and bounded SQLite lock waits with explicit errors.
+
 ## [0.3.14] — 2026-11-22
 
 ### Added

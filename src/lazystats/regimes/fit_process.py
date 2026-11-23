@@ -67,23 +67,46 @@ class FitWorker:
         self.process.stdin.flush()
 
     def _stop(self) -> None:
+        started = time.monotonic()
         process, self.process = self.process, None
         try:
             if process is not None:
                 if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                try:
+                    process.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    # Do not let cleanup turn a bounded fit into an unbounded
+                    # job.  A second kill is harmless; make one final bounded
+                    # reap attempt rather than trusting an unbounded wait.
                     process.kill()
-                process.wait()
+                    try:
+                        process.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        pass
                 if process.stdin is not None:
                     process.stdin.close()
         finally:
             if self._job is not None:
                 self._job.close()
                 self._job = None
+            print(f"regime worker phase=stop seconds={time.monotonic() - started:.3f}",
+                  file=sys.stderr, flush=True)
 
     def close(self) -> None:
         self._stop()
         self._scratch.cleanup()
         self._closed = True
+
+    def reset(self) -> None:
+        """Reap the current child; the next request starts a clean worker."""
+        if self._closed:
+            raise RuntimeError("fit worker is closed")
+        self._stop()
 
     def fit(self, instrument: str, *, timeout_seconds: float = DEFAULT_FIT_TIMEOUT_SECONDS,
             fit_function: Callable | None = None, **kwargs) -> dict:
@@ -92,6 +115,7 @@ class FitWorker:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("fit timeout must be finite and positive")
         started = time.monotonic()
+        polls = 0
         self._sequence += 1
         request_path = Path(self._scratch.name) / f"request-{self._sequence}.json"
         result_path = Path(self._scratch.name) / f"result-{self._sequence}.json"
@@ -108,8 +132,12 @@ class FitWorker:
             self.process.stdin.write(json.dumps(str(request_path)) + "\n")
             self.process.stdin.flush()
             while True:
+                polls += 1
                 if time.monotonic() - started >= timeout_seconds:
                     self._stop()
+                    print(f"regime worker phase=poll polls={polls} "
+                          f"seconds={time.monotonic() - started:.3f} status=timeout",
+                          file=sys.stderr, flush=True)
                     raise FitTimeout(f"{instrument}: fit exceeded {timeout_seconds:g}s")
                 if result_path.is_file():
                     try:
@@ -121,6 +149,9 @@ class FitWorker:
                         continue
                     if "error" in record:
                         raise FitProcessError(record["error"])
+                    print(f"regime worker phase=poll polls={polls} "
+                          f"seconds={time.monotonic() - started:.3f} status=ok",
+                          file=sys.stderr, flush=True)
                     return record["result"]
                 code = self.process.poll()
                 if code is not None:

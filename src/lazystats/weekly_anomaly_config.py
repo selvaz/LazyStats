@@ -113,7 +113,7 @@ def _positive_int(raw: dict[str, Any], key: str, path: Path) -> int:
         )
     if value <= 0:
         raise WeeklyConfigError(f"{path.name}: '{key}' must be positive, got {value}")
-    return value
+    return int(value)
 
 
 def _number(raw: dict[str, Any], key: str, path: Path) -> float:

@@ -3,11 +3,68 @@ hub — the real market_data_hub is exercised only when installed)."""
 
 from __future__ import annotations
 
+import sqlite3
+import threading
+import time
+
 import pytest
 
 from lazystats import ReturnDataset, return_volatility
-from lazystats.io.depot import ResultDepot
+from lazystats.io.depot import DepotBusyError, ResultDepot
 from lazystats.io.local import returns_from_csv
+
+
+def test_constructor_converts_exclusive_lock_to_depot_busy_error(tmp_path) -> None:
+    path = str(tmp_path / "constructor-busy.sqlite")
+    holder = sqlite3.connect(path)
+    holder.execute("CREATE TABLE seed (value INTEGER)")
+    holder.commit()
+    holder.execute("BEGIN EXCLUSIVE")
+    try:
+        with pytest.raises(DepotBusyError, match="another process holds an exclusive SQLite lock"):
+            ResultDepot(path, busy_timeout_seconds=0.01)
+    finally:
+        holder.rollback()
+        holder.close()
+
+
+def test_two_depot_writers_wait_for_short_transaction(tmp_path) -> None:
+    path = str(tmp_path / "two-writers.sqlite")
+    ResultDepot(path).close()
+    second = ResultDepot(path, busy_timeout_seconds=1)
+    entered = threading.Event()
+
+    def hold_lock() -> None:
+        first = ResultDepot(path, busy_timeout_seconds=1)
+        with first.transaction():
+            first.save(kind="report", produced_by="first", instruments=[], payload={},
+                       provenance={"source": "test"})
+            entered.set()
+            time.sleep(0.1)
+        first.close()
+
+    thread = threading.Thread(target=hold_lock)
+    thread.start()
+    assert entered.wait(1)
+    second.save(kind="report", produced_by="second", instruments=[], payload={},
+                provenance={"source": "test"})
+    thread.join()
+    assert len(second.list()) == 2
+    second.close()
+
+
+def test_two_depot_writers_surface_bounded_busy_error(tmp_path) -> None:
+    path = str(tmp_path / "busy-writers.sqlite")
+    first = ResultDepot(path)
+    second = ResultDepot(path, busy_timeout_seconds=0.01)
+    with first.transaction():
+        first.save(kind="report", produced_by="holder", instruments=[], payload={},
+                   provenance={"source": "test"})
+        with pytest.raises(DepotBusyError, match="locked"):
+            second.save(kind="report", produced_by="contender", instruments=[], payload={},
+                        provenance={"source": "test"})
+    first.close()
+    second.close()
 
 
 def test_depot_round_trip_with_provenance(tmp_path) -> None:

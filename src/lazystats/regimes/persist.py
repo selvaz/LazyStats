@@ -13,6 +13,7 @@ label actually changed.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -110,6 +111,7 @@ def write_fit(
     readings: list[Any],
     retro_days: int,
     scan_limit: int = SCAN_LIMIT,
+    deadline: float | None = None,
 ) -> WriteOutcome:
     """Record one successful fit: its diagnostics, then its readings.
 
@@ -149,37 +151,31 @@ def write_fit(
     payload["error_msg"] = None
     payload["estimation_date"] = estimation_date
 
-    result_id = depot.save(
-        kind="regime",
-        produced_by=PRODUCED_BY,
-        instruments=[symbol],
-        payload=payload,
-        provenance={"source": PROVENANCE_SOURCE},
-        cadence="stable",
-        series_key=series_key,
-        result_id=call.replaces,
-    )
+    with depot.transaction():
+        result_id = depot.save(
+            kind="regime", produced_by=PRODUCED_BY, instruments=[symbol],
+            payload=payload, provenance={"source": PROVENANCE_SOURCE}, cadence="stable",
+            series_key=series_key, result_id=call.replaces)
 
-    last_date, last_states = last_stored(depot, series_key)
-    selection = select_rows(
-        dates,
-        last_stored_date=last_date,
-        last_n_states=last_states,
-        n_states=int(diagnostics.get("n_states", 0)),
-        retro_days=retro_days,
-    )
+        last_date, last_states = last_stored(depot, series_key)
+        selection = select_rows(
+            dates, last_stored_date=last_date, last_n_states=last_states,
+            n_states=int(diagnostics.get("n_states", 0)), retro_days=retro_days)
 
-    changed: list[str] = []
-    for index in selection.indices:
-        if depot.save_stable_point(
-            series_key=series_key,
-            as_of_date=dates[index],
-            estimation_date=estimation_date,
-            value=readings[index],
-            result_id=result_id,
-            compare_keys=CHANGE_KEYS,
-        ):
-            changed.append(dates[index])
+        changed: list[str] = []
+        for index in selection.indices:
+            if depot.save_stable_point(
+                series_key=series_key, as_of_date=dates[index],
+                estimation_date=estimation_date, value=readings[index], result_id=result_id,
+                compare_keys=CHANGE_KEYS):
+                changed.append(dates[index])
+
+        # This check is deliberately inside the transaction.  A deadline
+        # crossed during SQLite work must roll the apparent success back;
+        # otherwise a resumed run skips an ``ok`` row that its predecessor
+        # truthfully reported as timed out.
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("fit deadline passed before depot commit")
 
     return WriteOutcome(
         result_id=result_id,
