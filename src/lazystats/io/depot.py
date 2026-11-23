@@ -29,10 +29,17 @@ import json
 import os
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-__all__ = ["ResultDepot", "resolve_result_depot_path"]
+__all__ = ["DepotBusyError", "ResultDepot", "resolve_result_depot_path"]
+
+DEFAULT_BUSY_TIMEOUT_SECONDS = 5.0
+
+
+class DepotBusyError(RuntimeError):
+    """A depot write could not acquire SQLite's lock within its bounded wait."""
 
 
 def resolve_result_depot_path(explicit: str | None = None) -> str | None:
@@ -110,8 +117,14 @@ class ResultDepot:
     :meth:`save_stable_point`.
     """
 
-    def __init__(self, path: str = ":memory:") -> None:
-        self._con = sqlite3.connect(path)
+    def __init__(self, path: str = ":memory:", *,
+                 busy_timeout_seconds: float = DEFAULT_BUSY_TIMEOUT_SECONDS) -> None:
+        if busy_timeout_seconds < 0:
+            raise ValueError("busy timeout cannot be negative")
+        self.busy_timeout_seconds = float(busy_timeout_seconds)
+        self._transaction_depth = 0
+        self._con = sqlite3.connect(path, timeout=self.busy_timeout_seconds)
+        self._con.execute(f"PRAGMA busy_timeout = {round(self.busy_timeout_seconds * 1000)}")
         self._con.executescript(_SCHEMA)
         self._migrate()
         # Never downgrade an existing marker: a depot already stamped with a
@@ -127,6 +140,43 @@ class ResultDepot:
                 (str(_SCHEMA_VERSION),),
             )
         self._con.commit()
+
+    def set_busy_timeout(self, seconds: float) -> None:
+        """Bound subsequent SQLite lock waits (also used by per-fit deadlines)."""
+        if seconds < 0:
+            raise ValueError("busy timeout cannot be negative")
+        self.busy_timeout_seconds = float(seconds)
+        self._con.execute(f"PRAGMA busy_timeout = {round(seconds * 1000)}")
+
+    @contextmanager
+    def transaction(self):
+        """Group writes into one short transaction, committing only at the boundary."""
+        outermost = self._transaction_depth == 0
+        try:
+            if outermost:
+                self._con.execute("BEGIN IMMEDIATE")
+            self._transaction_depth += 1
+            yield
+            self._transaction_depth -= 1
+            if outermost:
+                self._con.commit()
+        except sqlite3.OperationalError as exc:
+            self._transaction_depth = max(0, self._transaction_depth - 1)
+            if outermost:
+                self._con.rollback()
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                raise DepotBusyError(
+                    f"depot remained locked for {self.busy_timeout_seconds:g}s") from exc
+            raise
+        except BaseException:
+            self._transaction_depth = max(0, self._transaction_depth - 1)
+            if outermost:
+                self._con.rollback()
+            raise
+
+    def _commit(self) -> None:
+        if not self._transaction_depth:
+            self._con.commit()
 
     def _migrate(self) -> None:
         """Idempotent ALTER-based migration: add v2 columns if not already present.
@@ -219,7 +269,7 @@ class ResultDepot:
                 series_key,
             ),
         )
-        self._con.commit()
+        self._commit()
         return result_id
 
     def load(self, result_id: str) -> dict[str, Any] | None:
@@ -373,7 +423,7 @@ class ResultDepot:
                 datetime.now(UTC).isoformat(),
             ),
         )
-        self._con.commit()
+        self._commit()
         return True
 
     # NOTE: return-annotated as ``builtins.list`` (not bare ``list``) below —
@@ -450,7 +500,7 @@ class ResultDepot:
             "(result_id, detail_type, blob, created_at) VALUES (?, ?, ?, ?)",
             (result_id, detail_type, blob, datetime.now(UTC).isoformat()),
         )
-        self._con.commit()
+        self._commit()
 
     def get_detail(self, result_id: str, detail_type: str) -> bytes | None:
         row = self._con.execute(

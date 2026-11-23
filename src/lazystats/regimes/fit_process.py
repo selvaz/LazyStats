@@ -85,6 +85,12 @@ class FitWorker:
         self._scratch.cleanup()
         self._closed = True
 
+    def reset(self) -> None:
+        """Reap the current child; the next request starts a clean worker."""
+        if self._closed:
+            raise RuntimeError("fit worker is closed")
+        self._stop()
+
     def fit(self, instrument: str, *, timeout_seconds: float = DEFAULT_FIT_TIMEOUT_SECONDS,
             fit_function: Callable | None = None, **kwargs) -> dict:
         if self._closed:

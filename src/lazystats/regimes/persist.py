@@ -149,37 +149,24 @@ def write_fit(
     payload["error_msg"] = None
     payload["estimation_date"] = estimation_date
 
-    result_id = depot.save(
-        kind="regime",
-        produced_by=PRODUCED_BY,
-        instruments=[symbol],
-        payload=payload,
-        provenance={"source": PROVENANCE_SOURCE},
-        cadence="stable",
-        series_key=series_key,
-        result_id=call.replaces,
-    )
+    with depot.transaction():
+        result_id = depot.save(
+            kind="regime", produced_by=PRODUCED_BY, instruments=[symbol],
+            payload=payload, provenance={"source": PROVENANCE_SOURCE}, cadence="stable",
+            series_key=series_key, result_id=call.replaces)
 
-    last_date, last_states = last_stored(depot, series_key)
-    selection = select_rows(
-        dates,
-        last_stored_date=last_date,
-        last_n_states=last_states,
-        n_states=int(diagnostics.get("n_states", 0)),
-        retro_days=retro_days,
-    )
+        last_date, last_states = last_stored(depot, series_key)
+        selection = select_rows(
+            dates, last_stored_date=last_date, last_n_states=last_states,
+            n_states=int(diagnostics.get("n_states", 0)), retro_days=retro_days)
 
-    changed: list[str] = []
-    for index in selection.indices:
-        if depot.save_stable_point(
-            series_key=series_key,
-            as_of_date=dates[index],
-            estimation_date=estimation_date,
-            value=readings[index],
-            result_id=result_id,
-            compare_keys=CHANGE_KEYS,
-        ):
-            changed.append(dates[index])
+        changed: list[str] = []
+        for index in selection.indices:
+            if depot.save_stable_point(
+                series_key=series_key, as_of_date=dates[index],
+                estimation_date=estimation_date, value=readings[index], result_id=result_id,
+                compare_keys=CHANGE_KEYS):
+                changed.append(dates[index])
 
     return WriteOutcome(
         result_id=result_id,

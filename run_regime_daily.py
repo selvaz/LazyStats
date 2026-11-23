@@ -47,7 +47,12 @@ from lazystats.regimes.fit_process import (
     FitTimeout,
     FitWorker,
 )
-from lazystats.regimes.persist import regime_changed, write_failure, write_fit
+from lazystats.regimes.persist import (
+    find_todays_result,
+    regime_changed,
+    write_failure,
+    write_fit,
+)
 from lazystats.regimes.report import Revision, SymbolReport
 from lazystats.regimes.report import render_html as render_report
 from lazystats.regimes.series import series_key
@@ -155,7 +160,7 @@ def _revisions_for(depot: ResultDepot, series_key: str,
 def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                           report_path: Path | None, generated: str,
                           fit_timeout_seconds: float = DEFAULT_FIT_TIMEOUT_SECONDS,
-                          fit_function=None):
+                          fit_function=None, force: bool = False):
     """Fit each symbol, write it, and assemble the report — one at a time.
 
     The prices live only inside this step, and only for one symbol at a time:
@@ -171,6 +176,7 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
     """
 
     def fit_and_persist(arg: str) -> dict:
+        run_started = time.monotonic()
         bundle = json.loads(arg)
         outcomes: list[dict] = []
         entries: list[SymbolReport] = []
@@ -181,6 +187,7 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
             depot.close()
 
         bundle["outcomes"] = outcomes
+        bundle["fit_total_seconds"] = time.monotonic() - run_started
         # Small enough to travel: this record carries no images, which is the
         # whole reason it can be stored and read back later.
         bundle["daily_payload"] = build_daily_payload(
@@ -204,14 +211,30 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
 
     def _fit_symbols(bundle: dict, depot: ResultDepot, outcomes: list[dict],
                      entries: list[SymbolReport], worker: FitWorker) -> None:
+        configured_busy_timeout = depot.busy_timeout_seconds
         for symbol in bundle["symbols"]:
+            symbol_started = time.monotonic()
+            phases: dict[str, float] = {}
             key = series_key(
                 symbol,
                 market_db=bundle["market_db"],
                 production_db=bundle["production_db"],
                 variant=bundle["variant"],
             )
+            if not force and not dry_run:
+                lookup_started = time.monotonic()
+                _, existing_status = find_todays_result(depot, key, bundle["as_of"])
+                phases["resume_lookup"] = time.monotonic() - lookup_started
+                if existing_status == "ok":
+                    elapsed = time.monotonic() - symbol_started
+                    outcomes.append({"symbol": symbol, "series_key": key,
+                                     "status": "skipped", "seconds": elapsed,
+                                     "phases": phases,
+                                     "detail": "successful result already stored"})
+                    _log_timing(symbol, "skipped", elapsed, phases)
+                    continue
             try:
+                fit_started = time.monotonic()
                 fitted = worker.fit(
                     symbol,
                     timeout_seconds=fit_timeout_seconds,
@@ -226,42 +249,76 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                     **({"market_read_db": bundle["market_read_db"]}
                        if bundle.get("market_read_db") is not None else {}),
                 )
+                phases["fit_and_chart"] = time.monotonic() - fit_started
             except Exception as exc:  # one symbol's failure must not end the run
                 status = "timeout" if isinstance(exc, FitTimeout) else "error"
                 message = f"{type(exc).__name__}: {exc}"
                 if not dry_run:
-                    write_failure(depot, symbol=symbol, series_key=key,
-                                  estimation_date=bundle["as_of"], error=message,
-                                  status=status)
+                    write_started = time.monotonic()
+                    try:
+                        remaining = max(0.001, fit_timeout_seconds -
+                                        (time.monotonic() - symbol_started))
+                        depot.set_busy_timeout(min(configured_busy_timeout, remaining))
+                        write_failure(depot, symbol=symbol, series_key=key,
+                                      estimation_date=bundle["as_of"], error=message,
+                                      status=status)
+                    except Exception as write_exc:
+                        message += (f"; failure row not written: "
+                                    f"{type(write_exc).__name__}: {write_exc}")
+                    phases["write"] = time.monotonic() - write_started
+                elapsed = time.monotonic() - symbol_started
                 outcomes.append({"symbol": symbol, "series_key": key,
-                                 "status": status, "detail": message})
+                                 "status": status, "detail": message, "seconds": elapsed,
+                                 "phases": phases})
                 entries.append(SymbolReport(symbol=symbol, name=cfg.names.get(symbol),
                                             error=message, status=status))
+                _log_timing(symbol, status, elapsed, phases)
                 continue
 
             if dry_run:
                 outcomes.append({"symbol": symbol, "series_key": key, "status": "ok",
                                  "n_states": fitted["diagnostics"]["n_states"],
-                                 "points_written": 0, "detail": "dry run: nothing written"})
+                                 "points_written": 0, "detail": "dry run: nothing written",
+                                 "seconds": time.monotonic() - symbol_started, "phases": phases})
                 entries.append(_entry(cfg, fitted, symbol=symbol, revisions=(),
                                       changed_today=False))
+                _log_timing(symbol, "ok", time.monotonic() - symbol_started, phases)
                 continue
 
-            written = write_fit(
-                depot,
-                symbol=fitted["symbol"],
-                series_key=key,
-                estimation_date=bundle["as_of"],
-                diagnostics=fitted["diagnostics"],
-                dates=fitted["dates"],
-                readings=fitted["readings"],
-                retro_days=cfg.retro_days,
-            )
+            write_started = time.monotonic()
+            try:
+                remaining = fit_timeout_seconds - (time.monotonic() - symbol_started)
+                if remaining <= 0:
+                    raise FitTimeout(
+                        f"{symbol}: fit exceeded {fit_timeout_seconds:g}s before write")
+                depot.set_busy_timeout(min(configured_busy_timeout, remaining))
+                written = write_fit(
+                    depot, symbol=fitted["symbol"], series_key=key,
+                    estimation_date=bundle["as_of"], diagnostics=fitted["diagnostics"],
+                    dates=fitted["dates"], readings=fitted["readings"], retro_days=cfg.retro_days)
+                if time.monotonic() - symbol_started > fit_timeout_seconds:
+                    raise FitTimeout(f"{symbol}: fit and depot write exceeded "
+                                     f"{fit_timeout_seconds:g}s")
+            except Exception as exc:
+                phases["write"] = time.monotonic() - write_started
+                status = "timeout" if isinstance(exc, FitTimeout) else "error"
+                if status == "timeout":
+                    worker.reset()
+                message = f"{type(exc).__name__}: {exc}"
+                elapsed = time.monotonic() - symbol_started
+                outcomes.append({"symbol": symbol, "series_key": key, "status": status,
+                                 "detail": message, "seconds": elapsed, "phases": phases})
+                entries.append(SymbolReport(symbol=symbol, name=cfg.names.get(symbol),
+                                            error=message, status=status))
+                _log_timing(symbol, status, elapsed, phases)
+                continue
+            phases["write"] = time.monotonic() - write_started
+            elapsed = time.monotonic() - symbol_started
             outcomes.append({
                 "symbol": symbol, "series_key": key, "status": "ok",
                 "n_states": fitted["diagnostics"]["n_states"],
                 "points_written": written.points_written,
-                "detail": written.selection_reason,
+                "detail": written.selection_reason, "seconds": elapsed, "phases": phases,
             })
 
             # Compared against the previous trading date's reading, not
@@ -280,24 +337,36 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                 changed_today=regime_changed(
                     readings[-2] if len(readings) > 1 else None, readings[-1]),
             ))
+            _log_timing(symbol, "ok", elapsed, phases)
 
     return fit_and_persist
+
+
+def _log_timing(symbol: str, status: str, seconds: float, phases: dict[str, float]) -> None:
+    phase_text = ", ".join(f"{name}={value:.3f}s" for name, value in phases.items())
+    print(f"regime fit symbol={symbol} status={status} seconds={seconds:.3f} "
+          f"phases=[{phase_text}]", file=sys.stderr, flush=True)
 
 
 def summarise(arg: str) -> dict:
     """Count what happened, and keep the failures legible."""
     bundle = json.loads(arg)
     outcomes = bundle["outcomes"]
-    failures = [o for o in outcomes if o["status"] != "ok"]
+    failures = [o for o in outcomes if o["status"] not in {"ok", "skipped"}]
+    fitted = sum(o["status"] == "ok" for o in outcomes)
+    skipped = sum(o["status"] == "skipped" for o in outcomes)
     bundle["summary"] = {
         "window": bundle["window"],
         "as_of": bundle["as_of"],
         "symbols": len(outcomes),
-        "fitted": len(outcomes) - len(failures),
+        "fitted": fitted,
+        "skipped": skipped,
+        "timeouts": sum(o["status"] == "timeout" for o in outcomes),
         "failed": len(failures),
         "points_written": sum(o.get("points_written", 0) for o in outcomes),
         "failures": [{"symbol": f["symbol"], "status": f["status"],
                       "detail": f["detail"]} for f in failures],
+        "total_seconds": bundle.get("fit_total_seconds", 0.0),
     }
     return bundle
 
@@ -336,7 +405,8 @@ def build_plan(cfg: RegimeConfig, *, window: str, as_of: date, market_db: str,
                production_db: str, depot_path: str, dry_run: bool,
                market_read_db: str | None = None,
                report_path: Path | None = None, generated: str = "",
-               fit_timeout_seconds: float = DEFAULT_FIT_TIMEOUT_SECONDS) -> Plan:
+               fit_timeout_seconds: float = DEFAULT_FIT_TIMEOUT_SECONDS,
+               force: bool = False) -> Plan:
     """The pipeline: resolve, fit and write, store the run's record, then count."""
     return Plan(
         Step(_make_plan_run(cfg, window=window, as_of=as_of, market_db=market_db,
@@ -344,7 +414,8 @@ def build_plan(cfg: RegimeConfig, *, window: str, as_of: date, market_db: str,
                             market_read_db=market_read_db), name="plan_run"),
         Step(_make_fit_and_persist(cfg, depot_path=depot_path, dry_run=dry_run,
                                    report_path=report_path, generated=generated,
-                                   fit_timeout_seconds=fit_timeout_seconds),
+                                   fit_timeout_seconds=fit_timeout_seconds,
+                                   force=force),
              name="fit_and_persist"),
         Step(_make_persist_report(depot_path=depot_path, dry_run=dry_run),
              name="persist_report"),
@@ -529,6 +600,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Estimation date (default: today).")
     p.add_argument("--dry-run", action="store_true",
                    help="Fit and report, write nothing to the depot.")
+    p.add_argument("--force", action="store_true",
+                   help="Refit every symbol even when today's successful result exists.")
     p.add_argument("--fit-timeout-seconds", type=_positive_seconds,
                    default=DEFAULT_FIT_TIMEOUT_SECONDS,
                    help="Per-symbol child-process deadline, including data and charts "
@@ -560,7 +633,7 @@ def run_exit_code(outcomes: list[dict]) -> int:
         return 3
     if any(o["status"] == "timeout" for o in outcomes):
         return 2
-    successes = sum(o["status"] == "ok" for o in outcomes)
+    successes = sum(o["status"] in {"ok", "skipped"} for o in outcomes)
     if successes == len(outcomes):
         return 0
     return 2 if successes else 1
@@ -599,6 +672,7 @@ def main() -> int:
         report_path=report_path,
         generated=datetime.now().strftime("%Y-%m-%d %H:%M"),
         fit_timeout_seconds=args.fit_timeout_seconds,
+        force=args.force,
     )
     agent = Agent(engine=plan, name="regime_daily")
     # The envelope carries the failure; `.text()` throws it away.
@@ -630,6 +704,10 @@ def main() -> int:
         summary["daily_report"] = str(write_daily_report(
             bundle, depot_path=str(Path(args.depot)), out_dir=Path(args.report_dir)))
     print(json.dumps(summary, indent=2))
+    print("regime summary "
+          f"fitted={summary.get('fitted', 0)} skipped={summary.get('skipped', 0)} "
+          f"timeouts={summary.get('timeouts', 0)} failures={summary.get('failed', 0)} "
+          f"total_seconds={summary.get('total_seconds', 0.0):.3f}", file=sys.stderr)
 
     deliver, reason = delivery(args.send, args.dry_run, report_path)
     if deliver:

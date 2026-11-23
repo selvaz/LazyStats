@@ -116,6 +116,28 @@ def test_job_continues_and_reports_timeout_in_both_reports(tmp_path):
     assert summary["failures"][0]["status"] == "timeout"
 
 
+def test_daily_run_resumes_successes_and_force_refits(tmp_path):
+    mod = runner()
+    cfg = RegimeConfig(instruments=("BIL",), windows=(), comparisons=(),
+                       s_max=1, n_starts=1, random_state=123, retro_days=30)
+    depot_path = str(tmp_path / "depot.sqlite")
+    payload = {"symbols": ["BIL"], "window": "full", "variant": None, "start": "",
+               "as_of": "2026-10-01", "market_db": "synthetic",
+               "production_db": "synthetic"}
+
+    def run(*, force=False):
+        return mod._make_fit_and_persist(
+            cfg, depot_path=depot_path, dry_run=False, report_path=None, generated="test",
+            fit_timeout_seconds=30, fit_function=fake_fit, force=force)(json.dumps(payload))
+
+    first, resumed, forced = run(), run(), run(force=True)
+    assert [first["outcomes"][0]["status"], resumed["outcomes"][0]["status"],
+            forced["outcomes"][0]["status"]] == ["ok", "skipped", "ok"]
+    summary = mod.summarise(json.dumps(resumed))["summary"]
+    assert (summary["fitted"], summary["skipped"], summary["timeouts"],
+            summary["failed"]) == (0, 1, 0, 0)
+
+
 def test_snapshot_read_path_reaches_worker_without_changing_series_identity(
         tmp_path, monkeypatch):
     mod = runner()
