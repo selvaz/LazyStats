@@ -39,7 +39,7 @@ try:
     __version__ = version("lazystats")
 except PackageNotFoundError:
     # Keep source checkouts importable before the distribution is installed.
-    __version__ = "0.3.15"
+    __version__ = "0+unknown"
 
 __all__ = [
     "ReturnDataset",
