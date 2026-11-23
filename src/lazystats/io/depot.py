@@ -125,12 +125,23 @@ class ResultDepot:
         self.busy_timeout_seconds = float(busy_timeout_seconds)
         self._transaction_depth = 0
         self._con = sqlite3.connect(path, timeout=self.busy_timeout_seconds)
-        self._con.execute(f"PRAGMA busy_timeout = {round(self.busy_timeout_seconds * 1000)}")
-        # WAL lets report readers continue from their snapshot while the daily
-        # writer commits the next symbol.  SQLite persists this setting in the
-        # database, and all other openers use ordinary SQLite connections,
-        # which transparently understand the accompanying -wal file.
-        self._con.execute("PRAGMA journal_mode = WAL")
+        try:
+            self._con.execute(
+                f"PRAGMA busy_timeout = {round(self.busy_timeout_seconds * 1000)}"
+            )
+            # WAL lets report readers continue from their snapshot while the daily
+            # writer commits the next symbol. SQLite may need a write lock to change
+            # this persistent setting, so constructor lock failures have the same
+            # public contract as every other depot write.
+            self._con.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.OperationalError as exc:
+            self._con.close()
+            if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                raise DepotBusyError(
+                    "cannot open result depot: another process holds an exclusive "
+                    f"SQLite lock (waited {self.busy_timeout_seconds:g}s)"
+                ) from exc
+            raise
         self._con.executescript(_SCHEMA)
         self._migrate()
         # Never downgrade an existing marker: a depot already stamped with a

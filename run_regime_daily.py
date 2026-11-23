@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -176,13 +177,14 @@ def _stored_entry(cfg: RegimeConfig, depot: ResultDepot, *, symbol: str,
         and len(depot.list_series_vintages(series_key, point["as_of_date"])) > 1
     )
     readings = fitted["readings"]
-    return _entry(
+    entry = _entry(
         cfg, fitted, symbol=symbol,
         revisions=_revisions_for(depot, series_key, revised_dates),
         changed_today=regime_changed(
             readings[-2] if len(readings) > 1 else None,
             readings[-1] if readings else None),
     )
+    return replace(entry, stored_at=stored["created_at"])
 
 
 def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
@@ -410,6 +412,13 @@ def summarise(arg: str) -> dict:
         "total_seconds": bundle.get("fit_total_seconds", 0.0),
     }
     return bundle
+
+
+def _log_summary(summary: dict) -> None:
+    print("regime summary "
+          f"fitted={summary.get('fitted', 0)} skipped={summary.get('skipped', 0)} "
+          f"timeouts={summary.get('timeouts', 0)} failures={summary.get('failed', 0)} "
+          f"total_seconds={summary.get('total_seconds', 0.0):.3f}", file=sys.stderr)
 
 
 def _make_persist_report(*, depot_path: str, dry_run: bool):
@@ -745,10 +754,7 @@ def main() -> int:
         summary["daily_report"] = str(write_daily_report(
             bundle, depot_path=str(Path(args.depot)), out_dir=Path(args.report_dir)))
     print(json.dumps(summary, indent=2))
-    print("regime summary "
-          f"fitted={summary.get('fitted', 0)} skipped={summary.get('skipped', 0)} "
-          f"timeouts={summary.get('timeouts', 0)} failures={summary.get('failed', 0)} "
-          f"total_seconds={summary.get('total_seconds', 0.0):.3f}", file=sys.stderr)
+    _log_summary(summary)
 
     deliver, reason = delivery(args.send, args.dry_run, report_path)
     if deliver:

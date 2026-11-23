@@ -118,6 +118,8 @@ class SymbolReport:
     revisions: tuple[Revision, ...] = field(default_factory=tuple)
     #: Failure category, displayed only when ``error`` is present.
     status: str = "error"
+    #: Creation time of a stored fit reused by a resumed run.
+    stored_at: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -147,6 +149,9 @@ def _number(value: float | None, digits: int = 3) -> str:
 
 def _chart_img(entry: SymbolReport) -> str:
     if not entry.chart:
+        if entry.stored_at:
+            return (f'<p class="sub">Not refitted today (stored result from '
+                    f'{_esc(entry.stored_at)}).</p>')
         return '<p class="sub">No chart for this run.</p>'
     encoded = base64.b64encode(entry.chart).decode("ascii")
     return (f'<img alt="{_esc(entry.symbol)} regimes" '
