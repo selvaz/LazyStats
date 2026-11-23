@@ -37,3 +37,15 @@ def recording_fit(symbol, **kwargs):
     with Path(os.environ["LAZYSTATS_TEST_PID_LOG"]).open("a", encoding="utf-8") as stream:
         stream.write(f"{os.getpid()}\n")
     return fake_fit(symbol, **kwargs)
+
+
+def changing_fit(symbol, **kwargs):
+    result = fake_fit(symbol, **kwargs)
+    result["dates"] = ["2026-09-30", "2026-10-01"]
+    states = [0, 1] if symbol == "CHANGED" else [0, 0]
+    result["readings"] = [
+        {"state": state, "n_states": 1, "is_high_vol": False,
+         "prob_high_vol": 0.0, "state_probs": [1.0]}
+        for state in states
+    ]
+    return result

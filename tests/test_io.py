@@ -9,7 +9,7 @@ import time
 import pytest
 
 from lazystats import ReturnDataset, return_volatility
-from lazystats.io.depot import ResultDepot
+from lazystats.io.depot import DepotBusyError, ResultDepot
 from lazystats.io.local import returns_from_csv
 
 
@@ -35,6 +35,20 @@ def test_two_depot_writers_wait_for_short_transaction(tmp_path) -> None:
                 provenance={"source": "test"})
     thread.join()
     assert len(second.list()) == 2
+    second.close()
+
+
+def test_two_depot_writers_surface_bounded_busy_error(tmp_path) -> None:
+    path = str(tmp_path / "busy-writers.sqlite")
+    first = ResultDepot(path)
+    second = ResultDepot(path, busy_timeout_seconds=0.01)
+    with first.transaction():
+        first.save(kind="report", produced_by="holder", instruments=[], payload={},
+                   provenance={"source": "test"})
+        with pytest.raises(DepotBusyError, match="locked"):
+            second.save(kind="report", produced_by="contender", instruments=[], payload={},
+                        provenance={"source": "test"})
+    first.close()
     second.close()
 
 

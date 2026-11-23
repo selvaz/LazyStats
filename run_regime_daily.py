@@ -157,6 +157,34 @@ def _revisions_for(depot: ResultDepot, series_key: str,
     return tuple(revisions)
 
 
+def _stored_entry(cfg: RegimeConfig, depot: ResultDepot, *, symbol: str,
+                  series_key: str, result_id: str, as_of: str) -> SymbolReport:
+    """Rebuild a skipped symbol from its diagnostics and stable readings."""
+    stored = depot.load(result_id)
+    if stored is None:
+        raise RuntimeError(f"stored result {result_id} disappeared")
+    series = depot.get_series_latest(series_key)
+    fitted = {
+        "diagnostics": stored["payload"],
+        "dates": [point["as_of_date"] for point in series],
+        "readings": [point["value"] for point in series],
+        "chart": None,
+    }
+    revised_dates = tuple(
+        point["as_of_date"] for point in series
+        if point["estimation_date"] == as_of
+        and len(depot.list_series_vintages(series_key, point["as_of_date"])) > 1
+    )
+    readings = fitted["readings"]
+    return _entry(
+        cfg, fitted, symbol=symbol,
+        revisions=_revisions_for(depot, series_key, revised_dates),
+        changed_today=regime_changed(
+            readings[-2] if len(readings) > 1 else None,
+            readings[-1] if readings else None),
+    )
+
+
 def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                           report_path: Path | None, generated: str,
                           fit_timeout_seconds: float = DEFAULT_FIT_TIMEOUT_SECONDS,
@@ -214,6 +242,7 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
         configured_busy_timeout = depot.busy_timeout_seconds
         for symbol in bundle["symbols"]:
             symbol_started = time.monotonic()
+            deadline = symbol_started + fit_timeout_seconds
             phases: dict[str, float] = {}
             key = series_key(
                 symbol,
@@ -221,19 +250,25 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                 production_db=bundle["production_db"],
                 variant=bundle["variant"],
             )
-            if not force and not dry_run:
-                lookup_started = time.monotonic()
-                _, existing_status = find_todays_result(depot, key, bundle["as_of"])
-                phases["resume_lookup"] = time.monotonic() - lookup_started
-                if existing_status == "ok":
-                    elapsed = time.monotonic() - symbol_started
-                    outcomes.append({"symbol": symbol, "series_key": key,
-                                     "status": "skipped", "seconds": elapsed,
-                                     "phases": phases,
-                                     "detail": "successful result already stored"})
-                    _log_timing(symbol, "skipped", elapsed, phases)
-                    continue
             try:
+                if not force and not dry_run:
+                    lookup_started = time.monotonic()
+                    depot.set_busy_timeout(min(configured_busy_timeout,
+                                               max(0.001, deadline - time.monotonic())))
+                    existing_id, existing_status = find_todays_result(
+                        depot, key, bundle["as_of"])
+                    phases["find_todays_result"] = time.monotonic() - lookup_started
+                    if existing_status == "ok" and existing_id is not None:
+                        entries.append(_stored_entry(
+                            cfg, depot, symbol=symbol, series_key=key,
+                            result_id=existing_id, as_of=bundle["as_of"]))
+                        elapsed = time.monotonic() - symbol_started
+                        outcomes.append({"symbol": symbol, "series_key": key,
+                                         "status": "skipped", "seconds": elapsed,
+                                         "phases": phases,
+                                         "detail": "successful result already stored"})
+                        _log_timing(symbol, "skipped", elapsed, phases)
+                        continue
                 fit_started = time.monotonic()
                 fitted = worker.fit(
                     symbol,
@@ -265,7 +300,7 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                     except Exception as write_exc:
                         message += (f"; failure row not written: "
                                     f"{type(write_exc).__name__}: {write_exc}")
-                    phases["write"] = time.monotonic() - write_started
+                    phases["write_failure"] = time.monotonic() - write_started
                 elapsed = time.monotonic() - symbol_started
                 outcomes.append({"symbol": symbol, "series_key": key,
                                  "status": status, "detail": message, "seconds": elapsed,
@@ -287,7 +322,7 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
 
             write_started = time.monotonic()
             try:
-                remaining = fit_timeout_seconds - (time.monotonic() - symbol_started)
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise FitTimeout(
                         f"{symbol}: fit exceeded {fit_timeout_seconds:g}s before write")
@@ -295,16 +330,22 @@ def _make_fit_and_persist(cfg: RegimeConfig, *, depot_path: str, dry_run: bool,
                 written = write_fit(
                     depot, symbol=fitted["symbol"], series_key=key,
                     estimation_date=bundle["as_of"], diagnostics=fitted["diagnostics"],
-                    dates=fitted["dates"], readings=fitted["readings"], retro_days=cfg.retro_days)
-                if time.monotonic() - symbol_started > fit_timeout_seconds:
-                    raise FitTimeout(f"{symbol}: fit and depot write exceeded "
-                                     f"{fit_timeout_seconds:g}s")
+                    dates=fitted["dates"], readings=fitted["readings"],
+                    retro_days=cfg.retro_days, deadline=deadline)
             except Exception as exc:
                 phases["write"] = time.monotonic() - write_started
-                status = "timeout" if isinstance(exc, FitTimeout) else "error"
-                if status == "timeout":
-                    worker.reset()
+                status = "timeout" if isinstance(exc, TimeoutError) else "error"
                 message = f"{type(exc).__name__}: {exc}"
+                failure_started = time.monotonic()
+                try:
+                    depot.set_busy_timeout(configured_busy_timeout)
+                    write_failure(depot, symbol=symbol, series_key=key,
+                                  estimation_date=bundle["as_of"], error=message,
+                                  status=status)
+                except Exception as write_exc:
+                    message += (f"; failure row not written: "
+                                f"{type(write_exc).__name__}: {write_exc}")
+                phases["write_failure"] = time.monotonic() - failure_started
                 elapsed = time.monotonic() - symbol_started
                 outcomes.append({"symbol": symbol, "series_key": key, "status": status,
                                  "detail": message, "seconds": elapsed, "phases": phases})

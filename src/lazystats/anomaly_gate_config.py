@@ -117,7 +117,7 @@ def _positive_int(raw: dict[str, Any], key: str, path: Path) -> int:
         )
     if value <= 0:
         raise GateConfigError(f"{path.name}: '{key}' must be positive, got {value}")
-    return value
+    return int(value)
 
 
 def _text(raw: dict[str, Any], key: str, path: Path) -> str:

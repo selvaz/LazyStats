@@ -13,6 +13,7 @@ label actually changed.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -110,6 +111,7 @@ def write_fit(
     readings: list[Any],
     retro_days: int,
     scan_limit: int = SCAN_LIMIT,
+    deadline: float | None = None,
 ) -> WriteOutcome:
     """Record one successful fit: its diagnostics, then its readings.
 
@@ -167,6 +169,13 @@ def write_fit(
                 estimation_date=estimation_date, value=readings[index], result_id=result_id,
                 compare_keys=CHANGE_KEYS):
                 changed.append(dates[index])
+
+        # This check is deliberately inside the transaction.  A deadline
+        # crossed during SQLite work must roll the apparent success back;
+        # otherwise a resumed run skips an ``ok`` row that its predecessor
+        # truthfully reported as timed out.
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError("fit deadline passed before depot commit")
 
     return WriteOutcome(
         result_id=result_id,

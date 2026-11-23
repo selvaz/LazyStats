@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from lazystats.regimes.config import RegimeConfig
-from tests.fit_doubles import fake_fit, large_fit
+from tests.fit_doubles import changing_fit, fake_fit, large_fit
 from tests.test_regime_worker_review import _alive
 
 
@@ -136,6 +136,32 @@ def test_daily_run_resumes_successes_and_force_refits(tmp_path):
     summary = mod.summarise(json.dumps(resumed))["summary"]
     assert (summary["fitted"], summary["skipped"], summary["timeouts"],
             summary["failed"]) == (0, 1, 0, 0)
+
+
+def test_resumed_report_rebuilds_skipped_half_with_change_flags(tmp_path):
+    mod = runner()
+    path = str(tmp_path / "depot.sqlite")
+    common = dict(windows=(), comparisons=(), s_max=1, n_starts=1,
+                  random_state=123, retro_days=30)
+    first_cfg = RegimeConfig(instruments=("CHANGED",), **common)
+    full_cfg = replace(first_cfg, instruments=("CHANGED", "STEADY"))
+
+    def run(cfg):
+        payload = {"symbols": list(cfg.instruments), "window": "full", "variant": None,
+                   "start": "", "as_of": "2026-10-01", "market_db": "synthetic",
+                   "production_db": "synthetic"}
+        return mod._make_fit_and_persist(
+            cfg, depot_path=path, dry_run=False, report_path=None, generated="test",
+            fit_timeout_seconds=30, fit_function=changing_fit)(json.dumps(payload))
+
+    run(first_cfg)
+    resumed = run(full_cfg)
+    assert [item["status"] for item in resumed["outcomes"]] == ["skipped", "ok"]
+    records = {item["symbol"]: item for item in resumed["daily_payload"]["symbols"]}
+    assert set(records) == {"CHANGED", "STEADY"}
+    assert records["CHANGED"]["changed_today"] is True
+    assert records["STEADY"]["changed_today"] is False
+    assert resumed["daily_payload"]["summary"]["n_changed_today"] == 1
 
 
 def test_snapshot_read_path_reaches_worker_without_changing_series_identity(

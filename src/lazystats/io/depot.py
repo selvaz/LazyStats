@@ -29,9 +29,10 @@ import json
 import os
 import sqlite3
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, NoReturn
 
 __all__ = ["DepotBusyError", "ResultDepot", "resolve_result_depot_path"]
 
@@ -125,6 +126,11 @@ class ResultDepot:
         self._transaction_depth = 0
         self._con = sqlite3.connect(path, timeout=self.busy_timeout_seconds)
         self._con.execute(f"PRAGMA busy_timeout = {round(self.busy_timeout_seconds * 1000)}")
+        # WAL lets report readers continue from their snapshot while the daily
+        # writer commits the next symbol.  SQLite persists this setting in the
+        # database, and all other openers use ordinary SQLite connections,
+        # which transparently understand the accompanying -wal file.
+        self._con.execute("PRAGMA journal_mode = WAL")
         self._con.executescript(_SCHEMA)
         self._migrate()
         # Never downgrade an existing marker: a depot already stamped with a
@@ -149,7 +155,7 @@ class ResultDepot:
         self._con.execute(f"PRAGMA busy_timeout = {round(seconds * 1000)}")
 
     @contextmanager
-    def transaction(self):
+    def transaction(self) -> Iterator[None]:
         """Group writes into one short transaction, committing only at the boundary."""
         outermost = self._transaction_depth == 0
         try:
@@ -176,7 +182,23 @@ class ResultDepot:
 
     def _commit(self) -> None:
         if not self._transaction_depth:
-            self._con.commit()
+            try:
+                self._con.commit()
+            except sqlite3.OperationalError as exc:
+                self._raise_if_busy(exc)
+
+    def _write(self, sql: str, parameters: tuple[Any, ...] = ()) -> sqlite3.Cursor:
+        """Execute a write and give every write path the same lock contract."""
+        try:
+            return self._con.execute(sql, parameters)
+        except sqlite3.OperationalError as exc:
+            self._raise_if_busy(exc)
+
+    def _raise_if_busy(self, exc: sqlite3.OperationalError) -> NoReturn:
+        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            raise DepotBusyError(
+                f"depot remained locked for {self.busy_timeout_seconds:g}s") from exc
+        raise exc
 
     def _migrate(self) -> None:
         """Idempotent ALTER-based migration: add v2 columns if not already present.
@@ -255,7 +277,7 @@ class ResultDepot:
                 "provenance=excluded.provenance, created_at=excluded.created_at, "
                 "cadence=excluded.cadence, series_key=excluded.series_key"
             )
-        self._con.execute(
+        self._write(
             sql,
             (
                 result_id,
@@ -407,7 +429,7 @@ class ResultDepot:
         # place -- it's the same estimation event, not a new vintage -- rather
         # than violating the (series_key, as_of_date, estimation_date) UNIQUE
         # constraint and crashing the caller.
-        self._con.execute(
+        self._write(
             "INSERT INTO stable_series_points "
             "(series_key, as_of_date, estimation_date, value_json, result_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?) "
@@ -495,7 +517,7 @@ class ResultDepot:
         automatically — it is only invoked when a caller explicitly wants to
         persist a heavy artifact (predictions, residuals, state sequence, plot).
         """
-        self._con.execute(
+        self._write(
             "INSERT OR REPLACE INTO analysis_detail "
             "(result_id, detail_type, blob, created_at) VALUES (?, ?, ?, ?)",
             (result_id, detail_type, blob, datetime.now(UTC).isoformat()),
